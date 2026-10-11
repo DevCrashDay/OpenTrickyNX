@@ -904,4 +904,6 @@ void d3d8_PresentGuestFramebuffer(const void *src, unsigned pitch, unsigned w, u
 void d3d8_SetGuestFramebuffer(const void *src, unsigned pitch, unsigned w, unsigned h);
 int d3d8_HasGuestFramebuffer(void);
 int d3d8_GuestFramebufferActive(void);
+/* 0 while the GPU has not finished the previous movie present. */
+int d3d8_VideoPresentReady(void);
 void d3d8_SetGuestFramebufferAlt(const void *alt);

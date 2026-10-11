@@ -60,3 +60,7 @@ __pycache__/
 .idea/
 Thumbs.db
 .DS_Store
+
+# never a private key in git
+*.pem
+*.key

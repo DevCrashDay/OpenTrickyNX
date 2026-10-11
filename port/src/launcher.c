@@ -111,15 +111,6 @@ void launcher_init(uint32_t expected_entry_point)
     s_expected_entry = expected_entry_point;
 }
 
-static void exe_dir(char *out, size_t n)
-{
-    DWORD k = GetModuleFileNameA(NULL, out, (DWORD)n);
-    char *slash;
-    if (k == 0 || k >= n) { out[0] = '\0'; return; }
-    slash = strrchr(out, '\\');
-    if (slash) *slash = '\0';
-}
-
 /* UTF-8 (settings.ini) <-> the ANSI paths the runtime opens. A path outside
  * the code page becomes its short 8.3 form, or empty if it has none. */
 static BOOL u8_to_path(const char *u8, char *out, size_t n)
@@ -140,8 +131,45 @@ static void path_to_u8(const char *ansi, char *out, size_t n)
         WideCharToMultiByte(CP_UTF8, 0, w, -1, out, (int)n, NULL, NULL);
 }
 
-/* settings.ini (settings.h, settings_locate): beside the executables, or in
- * Documents\My Games\SSX Tricky when only that one exists. */
+/* The install root (settings_install_root): the folder of OpenTricky.exe and
+ * settings.ini, where the saves (hdd\, portable.txt, Saves\) and a relative
+ * HD pack or disc image are -- the parent of bin\ when the game is there. */
+static void install_dir(char *out, size_t n)
+{
+    char u8[SETTINGS_VALUE_MAX];
+    out[0] = '\0';
+    if (settings_install_root(u8, sizeof u8)) u8_to_path(u8, out, n);
+}
+
+BOOL launcher_install_root_w(WCHAR *out, size_t n)
+{
+    char u8[SETTINGS_VALUE_MAX];
+    size_t k;
+    if (!settings_install_root(u8, sizeof u8) || !MultiByteToWideChar(CP_UTF8, 0, u8, -1, out, (int)n)) {
+        if (n) out[0] = 0;
+        return FALSE;
+    }
+    k = wcslen(out);
+    if (k && out[k - 1] == L'\\') out[k - 1] = 0;      /* "D:\" -> "D:": callers add "\<name>" */
+    return TRUE;
+}
+
+static BOOL is_absolute(const char *p)
+{
+    return (p[0] && p[1] == ':') || (p[0] == '\\' && p[1] == '\\');
+}
+
+void launcher_resolve_path(const char *path, char *out, size_t out_sz)
+{
+    char base[MAX_PATH], joined[2 * MAX_PATH];
+    if (!path[0] || is_absolute(path)) { snprintf(out, out_sz, "%s", path); return; }
+    install_dir(base, sizeof base);
+    snprintf(joined, sizeof joined, "%s\\%s", base, path);
+    if (!base[0] || !GetFullPathNameA(joined, (DWORD)out_sz, out, NULL)) snprintf(out, out_sz, "%s", path);
+}
+
+/* settings.ini (settings.h, settings_locate): in the install root, beside
+ * OpenTricky.exe, or in Documents\My Games\SSX Tricky when only that one exists. */
 static void config_path_u8(char *out, size_t out_sz)
 {
     if (settings_locate(NULL, NULL, 0, out, out_sz) == SETTINGS_AT_NONE)
@@ -205,6 +233,8 @@ static void fork_defaults(LauncherConfig *c)
     c->fidelity = 1;
     c->save_backup = 1;                 /* XBOX_SAVE_BACKUP's default */
     c->smooth_motion = 1;               /* XBOX_FPS_INTERP's default */
+    c->smooth_legs = 0;                 /* XBOX_FPS_SMOOTH_LEGS's default */
+    c->unlock_all = 0;                  /* XBOX_UNLOCK_ALL's default: My save */
     c->fix_cullwind = c->fix_occlusion = c->fix_texpassthru = c->fix_gamma = 1;
     c->audio_queue = 8;
     c->audio_out = 0;                   /* auto */
@@ -279,6 +309,8 @@ static void fork_from_settings(LauncherConfig *c, const Settings *s)
     c->btn_icons = (i > 0 && (ICONS_PS2_READY || i != ICONS_PS2)) ? i : 0;
     c->save_backup   = settings_get_bool(s, S_SAVE_BACKUP);
     c->smooth_motion = settings_get_bool(s, S_SMOOTH_MOTION);
+    c->smooth_legs   = settings_get_bool(s, S_SMOOTH_LEGS);
+    c->unlock_all    = settings_choice_index(s, S_SAVE_PROFILE) == 1;   /* "unlockall" */
 }
 
 /* A path setting from the LauncherConfig: kept as it is in the file (relative,
@@ -320,6 +352,8 @@ static void fork_to_settings(Settings *s, const LauncherConfig *c)
     settings_set(s, S_BUTTON_STYLE, k_icons_name[(c->btn_icons >= 0 && c->btn_icons < N_ICONS) ? c->btn_icons : 0]);
     settings_set(s, S_SAVE_BACKUP, c->save_backup ? "1" : "0");
     settings_set(s, S_SMOOTH_MOTION, c->smooth_motion ? "1" : "0");
+    settings_set(s, S_SMOOTH_LEGS, c->smooth_legs ? "1" : "0");
+    settings_set(s, S_SAVE_PROFILE, c->unlock_all ? "unlockall" : "mine");
 }
 
 /* XBOX_FORK_INI (test runs): the options of a settings.ini (settings.h);
@@ -365,15 +399,8 @@ void launcher_fork_apply(const LauncherConfig *cfg, const char *source)
     int on = cfg->fidelity != 0;
     int smaa = (cfg->smaa >= 0 && cfg->smaa <= 4) ? cfg->smaa : 0;
 
-    /* settings.ini may name the HD pack relative to the game's folder ("hd-pack") */
-    hd[0] = '\0';
-    if (cfg->hd_path[0] && !(cfg->hd_path[1] == ':' || (cfg->hd_path[0] == '\\' && cfg->hd_path[1] == '\\'))) {
-        char base[MAX_PATH], joined[2 * MAX_PATH];
-        exe_dir(base, sizeof base);
-        snprintf(joined, sizeof joined, "%s\\%s", base, cfg->hd_path);
-        if (!GetFullPathNameA(joined, sizeof hd, hd, NULL)) hd[0] = '\0';
-    }
-    if (!hd[0]) snprintf(hd, sizeof hd, "%s", cfg->hd_path);
+    /* settings.ini may name the HD pack relative to the install root ("hd-pack") */
+    launcher_resolve_path(cfg->hd_path, hd, sizeof hd);
 
     fork_set(line, sizeof line, "XBOX_SMAA", smaa ? "1" : "0", source);
     /* the preset only means something with SMAA on */
@@ -398,6 +425,9 @@ void launcher_fork_apply(const LauncherConfig *cfg, const char *source)
     /* the save backup copy and the frames in between above 60 */
     fork_set(line, sizeof line, "XBOX_SAVE_BACKUP", cfg->save_backup ? "1" : "0", source);
     fork_set(line, sizeof line, "XBOX_FPS_INTERP", cfg->smooth_motion ? "1" : "0", source);
+    fork_set(line, sizeof line, "XBOX_FPS_SMOOTH_LEGS", cfg->smooth_legs ? "1" : "0", source);
+    /* Save profile: Unlock all = the game's own cheat and a save folder of its own (main.c) */
+    fork_set(line, sizeof line, "XBOX_UNLOCK_ALL", cfg->unlock_all ? "1" : "0", source);
     /* Original = no hook. */
     fork_set(line, sizeof line, "XBOX_DRAW_DISTANCE",
              k_drawdist_name[(cfg->draw_dist >= 0 && cfg->draw_dist <= 2) ? cfg->draw_dist : 0], source);
@@ -409,6 +439,17 @@ void launcher_fork_apply(const LauncherConfig *cfg, const char *source)
     fork_set(line, sizeof line, "XBOX_CONTROL_SCHEME", NULL, NULL);
     fork_set(line, sizeof line, "XBOX_BUTTON_ICONS",
              k_icons_name[(cfg->btn_icons >= 0 && cfg->btn_icons < N_ICONS) ? cfg->btn_icons : 0], source);
+    {   /* the shader disk cache, beside settings.ini (the path is not reported) */
+        char dir[MAX_PATH], *slash;
+        launcher_config_path(dir, sizeof dir);
+        slash = strrchr(dir, '\\');
+        if (slash) slash[1] = '\0';
+        else dir[0] = '\0';
+        if (!getenv("XBOX_SHADER_CACHE_DIR") && strlen(dir) + 14 < sizeof dir) {
+            strcat(dir, "cache\\shaders");
+            _putenv_s("XBOX_SHADER_CACHE_DIR", dir);
+        }
+    }
     {   /* menus: applied before aspect_init (aspect_set_menus); the effective one */
         size_t len = strlen(line);
         snprintf(line + len, sizeof line - len, " Menus=%s", g_aspect_menus43 && g_aspect_hook_on ? "4:3" : "16:9");
@@ -426,7 +467,7 @@ static void config_from_settings(LauncherConfig *c, const Settings *s)
 
     memset(c, 0, sizeof *c);
     u8_to_path(settings_get(s, S_DISC_IMAGE), c->iso, sizeof c->iso);
-    u8_to_path(settings_get(s, S_SAVE_FOLDER), c->hdd, sizeof c->hdd);    /* "": automatic */
+    snprintf(c->hdd, sizeof c->hdd, "%s", settings_get(s, S_SAVE_FOLDER));  /* UTF-8; "": automatic */
     i = settings_choice_index(s, S_ASPECT);
     c->aspect = i >= 0 ? i : LAUNCHER_ASPECT_AUTO;
     c->wide_fov = aspect_fov_parse(settings_get(s, S_FOV), ASPECT_FOV_NOSTRETCH);
@@ -459,7 +500,7 @@ static void config_to_settings(Settings *s, const LauncherConfig *c)
     int w, h;
 
     path_to_settings(s, S_DISC_IMAGE, c->iso);
-    path_to_settings(s, S_SAVE_FOLDER, c->hdd);
+    settings_set(s, S_SAVE_FOLDER, c->hdd);
     settings_set(s, S_ASPECT, launcher_aspect_name(c->aspect));
     settings_set(s, S_FOV, aspect_fov_name(c->wide_fov));
     if (c->hud_shape == HUD_SHAPE_XBOX) snprintf(v, sizeof v, "xbox");
@@ -483,8 +524,8 @@ static void config_to_settings(Settings *s, const LauncherConfig *c)
     fork_to_settings(s, c);
 }
 
-/* "SSX Tricky.log", in the folder of settings.ini (beside the game, or in
- * Documents when the game's folder cannot be written). */
+/* "SSX Tricky.log", in the folder of settings.ini (the install root, or
+ * Documents when it cannot be written). */
 void launcher_log_path(char *out, size_t out_sz)
 {
     char ini[MAX_PATH], exe[MAX_PATH], *slash, *name, *dot;
@@ -503,80 +544,217 @@ void launcher_log_path(char *out, size_t out_sz)
 }
 
 /* A folder with something in it (the saves of an earlier version). */
-static BOOL folder_has_files(const char *dir)
+static BOOL folder_has_files(const WCHAR *dir)
 {
-    char pat[MAX_PATH + 4];
-    WIN32_FIND_DATAA fd;
+    WCHAR pat[MAX_PATH + 4];
+    WIN32_FIND_DATAW fd;
     HANDLE h;
     BOOL any = FALSE;
-    snprintf(pat, sizeof pat, "%s\\*", dir);
-    h = FindFirstFileA(pat, &fd);
+    _snwprintf(pat, MAX_PATH + 4, L"%ls\\*", dir);
+    pat[MAX_PATH + 3] = 0;
+    h = FindFirstFileW(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) return FALSE;
     do {
-        if (strcmp(fd.cFileName, ".") && strcmp(fd.cFileName, "..")) any = TRUE;
-    } while (!any && FindNextFileA(h, &fd));
+        if (wcscmp(fd.cFileName, L".") && wcscmp(fd.cFileName, L"..")) any = TRUE;
+    } while (!any && FindNextFileW(h, &fd));
     FindClose(h);
     return any;
 }
 
 /* Documents\My Games\SSX Tricky\Saves, created if missing. The
- * real Documents folder (moved, or synced by OneDrive, it still works); FALSE
- * if it cannot be had as a path the game's ANSI file calls can open. */
-static BOOL documents_saves(char *out, size_t out_sz)
+ * real Documents folder (moved, or synced by OneDrive, it still works).
+ * `out` gets the wide path whenever Documents is known. The answer is the
+ * one earlier versions gave -- TRUE only when the path also has an ANSI or
+ * short 8.3 form -- so the folder chosen for a player never moves (saves
+ * already beside the game stay found); the game itself opens it wide. */
+static BOOL documents_saves(WCHAR *out, size_t n)
 {
     PWSTR docs = NULL;
-    WCHAR w[MAX_PATH], sh[MAX_PATH];
-    BOOL lossy = FALSE, ok = FALSE;
+    WCHAR sh[MAX_PATH];
+    char a[MAX_PATH * 2];
+    BOOL lossy = FALSE;
+    out[0] = L'\0';
     if (FAILED(SHGetKnownFolderPath(&FOLDERID_Documents, 0, NULL, &docs)) || !docs) return FALSE;
-    _snwprintf(w, MAX_PATH, L"%ls\\My Games\\SSX Tricky\\Saves", docs);
-    w[MAX_PATH - 1] = 0;
+    _snwprintf(out, n, L"%ls\\My Games\\SSX Tricky\\Saves", docs);
+    out[n - 1] = 0;
     CoTaskMemFree(docs);
-    SHCreateDirectoryExW(NULL, w, NULL);
-    if (WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, w, -1, out, (int)out_sz, NULL, &lossy) && !lossy)
-        ok = TRUE;
-    else if (GetShortPathNameW(w, sh, MAX_PATH) &&       /* a user name outside the code page */
-             WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, sh, -1, out, (int)out_sz, NULL, &lossy) && !lossy)
-        ok = TRUE;
-    return ok;
+    SHCreateDirectoryExW(NULL, out, NULL);
+    if (WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, out, -1, a, (int)sizeof a, NULL, &lossy) && !lossy)
+        return TRUE;
+    lossy = FALSE;
+    return GetShortPathNameW(out, sh, MAX_PATH) &&      /* a user name outside the code page */
+           WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, sh, -1, a, (int)sizeof a, NULL, &lossy) && !lossy;
+}
+
+int launcher_unlock_all(void)
+{
+    const char *e = getenv("XBOX_UNLOCK_ALL");
+    return e && e[0] == '1';
+}
+
+int launcher_unlock_all_folder(char *save_u8, size_t sz)
+{
+    WCHAR w[MAX_PATH];
+    size_t n = strlen(save_u8);
+    while (n && (save_u8[n - 1] == '\\' || save_u8[n - 1] == '/')) save_u8[--n] = '\0';
+    if (!n || n + 1 + strlen(LAUNCHER_UNLOCK_ALL_DIR) >= sz) return 0;
+    strcat(save_u8, "\\" LAUNCHER_UNLOCK_ALL_DIR);
+    /* with its parents: the save folder itself may not exist yet, and the
+     * runtime creates only the last level (xbox_path_init) */
+    if (MultiByteToWideChar(CP_UTF8, 0, save_u8, -1, w, MAX_PATH))
+        SHCreateDirectoryExW(NULL, w, NULL);
+    return 1;
 }
 
 /* Where the saves go. A SaveFolder set in the .ini (chosen in
  * Advanced, a test pack's, an older .ini's) is used as it is. Left empty, the
  * folder is automatic:
- *   1. hdd\ beside the game, if it holds saves (an earlier version's default):
- *      used where it is -- nothing is moved, nothing can be lost;
- *   2. Saves\ beside the game if portable.txt is there (a copyable install);
+ *   1. hdd\ in the install root (beside OpenTricky.exe, the game too before
+ *      bin\), if it holds saves (an earlier version's default): used where
+ *      it is -- nothing is moved, nothing can be lost;
+ *   2. Saves\ in the install root if portable.txt is there (a copyable install);
  *   3. Documents\My Games\SSX Tricky\Saves, as PC games do (works when the
  *      game is installed where it cannot write, such as Program Files);
- *      Saves\ beside the game if Documents cannot be used. */
+ *      Saves\ in the install root if Documents cannot be used. */
 int launcher_save_kind(const LauncherConfig *cfg)
 {
-    char base[MAX_PATH], p[MAX_PATH + 16], d[MAX_PATH];
+    WCHAR base[MAX_PATH], p[MAX_PATH + 16], d[MAX_PATH];
     if (cfg->hdd[0]) return LAUNCHER_SAVES_CHOSEN;
-    exe_dir(base, sizeof base);
-    snprintf(p, sizeof p, "%s\\hdd", base);
+    launcher_install_root_w(base, MAX_PATH);
+    _snwprintf(p, MAX_PATH + 16, L"%ls\\hdd", base);
+    p[MAX_PATH + 15] = 0;
     if (folder_has_files(p)) return LAUNCHER_SAVES_OLD_HDD;
-    snprintf(p, sizeof p, "%s\\portable.txt", base);
-    if (GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) return LAUNCHER_SAVES_PORTABLE;
-    if (documents_saves(d, sizeof d)) return LAUNCHER_SAVES_DOCUMENTS;
+    _snwprintf(p, MAX_PATH + 16, L"%ls\\portable.txt", base);
+    p[MAX_PATH + 15] = 0;
+    if (GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES) return LAUNCHER_SAVES_PORTABLE;
+    if (documents_saves(d, MAX_PATH)) return LAUNCHER_SAVES_DOCUMENTS;
     return LAUNCHER_SAVES_PORTABLE;
 }
 
 void launcher_hdd_path(const LauncherConfig *cfg, char *out, size_t out_sz)
 {
     int kind = launcher_save_kind(cfg);
-    const char *p = kind == LAUNCHER_SAVES_CHOSEN ? cfg->hdd : kind == LAUNCHER_SAVES_OLD_HDD ? "hdd" : "Saves";
-    char joined[MAX_PATH * 2];
-    if (kind == LAUNCHER_SAVES_DOCUMENTS && documents_saves(out, out_sz)) return;
-    if ((p[0] && p[1] == ':') || (p[0] == '\\' && p[1] == '\\')) {
-        snprintf(joined, sizeof joined, "%s", p);
-    } else {
-        char base[MAX_PATH];
-        exe_dir(base, sizeof base);
-        snprintf(joined, sizeof joined, "%s\\%s", base, p);
+    WCHAR p[MAX_PATH], joined[MAX_PATH * 2], full[MAX_PATH];
+    out[0] = '\0';
+    if (kind == LAUNCHER_SAVES_DOCUMENTS && documents_saves(full, MAX_PATH)) {
+        WideCharToMultiByte(CP_UTF8, 0, full, -1, out, (int)out_sz, NULL, NULL);
+        return;
     }
-    if (!GetFullPathNameA(joined, (DWORD)out_sz, out, NULL))
-        snprintf(out, out_sz, "%s", joined);
+    if (kind == LAUNCHER_SAVES_CHOSEN) {
+        if (!MultiByteToWideChar(CP_UTF8, 0, cfg->hdd, -1, p, MAX_PATH)) p[0] = L'\0';
+    } else {
+        wcscpy(p, kind == LAUNCHER_SAVES_OLD_HDD ? L"hdd" : L"Saves");
+    }
+    if ((p[0] && p[1] == L':') || (p[0] == L'\\' && p[1] == L'\\')) {
+        wcscpy(joined, p);
+    } else {
+        WCHAR base[MAX_PATH];
+        launcher_install_root_w(base, MAX_PATH);
+        _snwprintf(joined, MAX_PATH * 2, L"%ls\\%ls", base, p);
+        joined[MAX_PATH * 2 - 1] = 0;
+    }
+    if (!GetFullPathNameW(joined, MAX_PATH, full, NULL)) {
+        wcsncpy(full, joined, MAX_PATH - 1);
+        full[MAX_PATH - 1] = 0;
+    }
+    WideCharToMultiByte(CP_UTF8, 0, full, -1, out, (int)out_sz, NULL, NULL);
+}
+
+/* ── Saves left by 0.1.1 and earlier in a misnamed folder ─────────── */
+
+/* Files in `dir` and below (stops counting at `limit`). */
+static int count_files(const WCHAR *dir, int limit)
+{
+    WCHAR pat[MAX_PATH + 4], sub[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int n = 0;
+    _snwprintf(pat, MAX_PATH + 4, L"%ls\\*", dir);
+    pat[MAX_PATH + 3] = 0;
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..") ||
+            (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            _snwprintf(sub, MAX_PATH, L"%ls\\%ls", dir, fd.cFileName);
+            sub[MAX_PATH - 1] = 0;
+            n += count_files(sub, limit - n);
+        } else {
+            n++;
+        }
+    } while (n < limit && FindNextFileW(h, &fd));
+    FindClose(h);
+    return n;
+}
+
+/* A save folder with saves in it: UDATA holding at least one file. */
+static BOOL has_saves(const WCHAR *dir)
+{
+    WCHAR u[MAX_PATH];
+    _snwprintf(u, MAX_PATH, L"%ls\\UDATA", dir);
+    u[MAX_PATH - 1] = 0;
+    return count_files(u, 1) > 0;
+}
+
+/* Copies `src` into `dst`, folders included; an existing file is never
+ * replaced, nothing is moved or deleted. Returns the files copied. */
+static int copy_tree(const WCHAR *src, const WCHAR *dst)
+{
+    WCHAR pat[MAX_PATH + 4], s[MAX_PATH], d[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int n = 0;
+    CreateDirectoryW(dst, NULL);
+    _snwprintf(pat, MAX_PATH + 4, L"%ls\\*", src);
+    pat[MAX_PATH + 3] = 0;
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..") ||
+            (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+        _snwprintf(s, MAX_PATH, L"%ls\\%ls", src, fd.cFileName);
+        _snwprintf(d, MAX_PATH, L"%ls\\%ls", dst, fd.cFileName);
+        s[MAX_PATH - 1] = d[MAX_PATH - 1] = 0;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) n += copy_tree(s, d);
+        else if (CopyFileW(s, d, TRUE)) n++;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return n;
+}
+
+/* Up to 0.1.1 the save folder reached the runtime as an ANSI path read as
+ * UTF-8: with an accent (a chosen folder, or the Documents folder of an
+ * accented user name) the saves went to a folder whose name has U+FFFD in
+ * place of the accented letters, beside the real one, when its parent
+ * existed. That folder is worked out the same way here; if it holds saves
+ * and the real one has none, they are copied over. The old folder is left
+ * as it is, and nothing is done in any other case. */
+void launcher_migrate_saves(const char *save_u8)
+{
+    WCHAR real[MAX_PATH], ghost[MAX_PATH];
+    char ansi[MAX_PATH * 2], g8[MAX_PATH * 3];
+    const unsigned char *c;
+    BOOL high = FALSE;
+    size_t len;
+    int n;
+
+    if (!MultiByteToWideChar(CP_UTF8, 0, save_u8, -1, real, MAX_PATH) || !real[0]) return;
+    len = wcslen(real);
+    if (len > 3 && real[len - 1] == L'\\') real[len - 1] = 0;
+    /* the path as 0.1.1 had it: ANSI (or its short 8.3 form) ... */
+    if (!to_path(real, ansi, sizeof ansi)) return;           /* 0.1.1 used another folder then */
+    for (c = (const unsigned char *)ansi; *c; c++)
+        if (*c >= 0x80) high = TRUE;
+    if (!high) return;                                        /* plain ASCII: the same folder */
+    /* ... decoded as UTF-8, as xbox_path_init did */
+    if (!MultiByteToWideChar(CP_UTF8, 0, ansi, -1, ghost, MAX_PATH) || !_wcsicmp(ghost, real)) return;
+    if (!has_saves(ghost) || has_saves(real)) return;
+    SHCreateDirectoryExW(NULL, real, NULL);
+    n = copy_tree(ghost, real);
+    WideCharToMultiByte(CP_UTF8, 0, ghost, -1, g8, sizeof g8, NULL, NULL);
+    printf("Saves:      %d file(s) copied from %s (an earlier version's folder, left as it is) to %s\n",
+           n, g8, save_u8);
 }
 
 void launcher_open_path(HWND owner, const char *path, BOOL folder)
@@ -595,26 +773,41 @@ void launcher_open_path(HWND owner, const char *path, BOOL folder)
  * what this window does not change is written back as it was. */
 static Settings s_settings;
 
+/* What launcher_config_load printed, for the log file (opened after it). */
+static char s_settings_line[SETTINGS_VALUE_MAX + 160];
+static char s_settings_ignored[SETTINGS_IGNORED_MAX + 64];
+
 void launcher_config_load(LauncherConfig *cfg)
 {
-    char u8[SETTINGS_VALUE_MAX];
+    char u8[SETTINGS_VALUE_MAX], lines[32] = "";
     int bad = 0, r;
 
     config_path_u8(u8, sizeof u8);
     r = settings_load(&s_settings, u8, &bad);       /* defaults when missing or old */
     config_from_settings(cfg, &s_settings);
-    printf("Settings:  %s (%s", u8,
-           r == SETTINGS_LOAD_OK      ? "read" :
-           r == SETTINGS_LOAD_MISSING ? "none yet: defaults" :
-           r == SETTINGS_LOAD_NOT_V1  ? "an older file, not read: defaults" :
-           r == SETTINGS_LOAD_NEWER   ? "written by a newer version: the known settings read" :
-                                        "could not be read: defaults");
-    if (bad) printf(", %d line(s) ignored", bad);
-    printf(", preset %s)\n", settings_preset_name(settings_current_preset(&s_settings)));
+    if (bad) snprintf(lines, sizeof lines, ", %d line(s) ignored", bad);
+    snprintf(s_settings_line, sizeof s_settings_line, "Settings:  %s (%s%s, preset %s)\n", u8,
+             r == SETTINGS_LOAD_OK      ? "read" :
+             r == SETTINGS_LOAD_MISSING ? "none yet: defaults" :
+             r == SETTINGS_LOAD_NOT_V1  ? "an older file, not read: defaults" :
+             r == SETTINGS_LOAD_NEWER   ? "written by a newer version: the known settings read" :
+                                          "could not be read: defaults",
+             lines, settings_preset_name(settings_current_preset(&s_settings)));
+    s_settings_ignored[0] = '\0';
+    if (bad)    /* unknown keys are kept in the file, values not valid take their default */
+        snprintf(s_settings_ignored, sizeof s_settings_ignored, "Settings:  not understood, not used: %s\n",
+                 s_settings.ignored);
+    launcher_config_log();
 }
 
-/* Written whole, with comments (settings_save), to settings.ini beside the
- * game, or in Documents\My Games\SSX Tricky when the game's folder cannot be
+void launcher_config_log(void)
+{
+    fputs(s_settings_line, stdout);
+    fputs(s_settings_ignored, stdout);
+}
+
+/* Written whole, with comments (settings_save), to settings.ini in the
+ * install root, or in Documents\My Games\SSX Tricky when it cannot be
  * written (settings_locate). */
 BOOL launcher_config_save(const LauncherConfig *cfg)
 {

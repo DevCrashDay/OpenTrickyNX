@@ -31,6 +31,8 @@ class OtRenderInterface : public RenderInterface_GL3 {
 public:
     OtTextureMaker maker;
     Rml::TextureHandle LoadTexture(Rml::Vector2i &dimensions, const Rml::String &source) override;
+    /* The font engine's glyph pictures pass here: see text_gamma in ot_render.cpp. */
+    Rml::TextureHandle GenerateTexture(Rml::Span<const Rml::byte> source, Rml::Vector2i dimensions) override;
 };
 
 class OtSystemInterface : public SystemInterface_SDL {

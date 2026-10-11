@@ -1,14 +1,14 @@
 <!-- launcher
-version: 0.1.1
-title: New launcher, PS2 controls
-card: snowdream
-fixes: A rare save loss is fixed
-fixes: Rare freezes and crashes are fixed
-new: The original PS2 controls
-new: Xbox, PlayStation or PS2 buttons
-new: A backup copy of your saves
-better: Wide screens: the HUD keeps its shape
-better: Smoother at high frame rates
+version: 0.1.2
+title: Faithful fixes, smoother races
+card: garibaldi
+fixes: Melting snow fixed (it was a port bug)
+fixes: Showoff snowflakes can be collected again
+fixes: Crowd and ambience back above 60 FPS
+fixes: Rider's voice on the finish close-up
+fixes: No more stretched frame at the race start
+fixes: Long sessions no longer lose the world
+new: Save profile: your own save or unlock all
 -->
 This file is the "What's new" block of the installed version, built into
 OpenTricky.exe (the launcher shows it without a network). It is the same

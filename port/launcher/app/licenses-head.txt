@@ -11,6 +11,8 @@ Their licences follow, in full.
   RmlUi 6.3              MIT licence               https://github.com/mikke89/RmlUi
   SDL 3.4.8              zlib licence              https://libsdl.org
   FreeType 2.14.3        FreeType License (FTL)    https://freetype.org
+  miniz 3.1.2            MIT licence               https://github.com/richgel999/miniz
+  Monocypher 4.0.2       BSD 2-clause (or CC0)     https://monocypher.org
   Inter, Bebas Neue,     SIL Open Font License 1.1 https://github.com/google/fonts
   Exo 2 (fonts)
   Bullet (font)          House Industries, licensed font; not covered by the

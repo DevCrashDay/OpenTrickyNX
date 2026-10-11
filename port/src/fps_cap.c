@@ -16,7 +16,15 @@ unsigned d3d8_PresentSeq(void);
 
 int g_fps_cap_on;
 static int s_in_extra;          /* an extra render is in progress */
+/* Fork: the race render (0xAB610) updates the ambient sound emitters (0x120CF0),
+ * which stops every emitter the tick did not refresh since the previous update.
+ * An extra render (no tick before it) stopped them all: the crowd, cheers and track
+ * ambience restarted on the next tick with a new bank, evicting the previous one,
+ * and none was ever heard. The generated call (fork pass fix_crowdemit.py) asks this. */
+extern int g_fix_crowdemit;
+int fps_cap_skip_emitters(void) { return g_fix_crowdemit && s_in_extra; }
 static int s_dup_k;             /* DUP mode: index of the render after the normal one */
+static int s_fix_hud;           /* XBOX_FIX_HUD_RATE (default 1): overlay animations at tick rate */
 
 #define APP_GLOBAL      0x001E3C7Cu
 #define TICK_MS         (1000.0 / 60.0)
@@ -286,6 +294,220 @@ static void pages_report(void)
     fprintf(stderr, " (%u ranges)\n", shown);
 }
 
+/* ── HUD at tick rate (XBOX_FIX_HUD_RATE, default 1) ─────────────
+ * The InGameState render draws the 19 OverlayManager panels (race HUD,
+ * pause and in-race menus, banners), and several of their draw methods step
+ * an animation on every call, with no time base: selected item pulse
+ * (0xD06C0: globals 0x1BB25C / 0x1BB260; 0x56A60: 0x1AA7D4 / 0x1AA7D8),
+ * list counter 0x1E9888 (0xD4DE0), finish banner fade (0xD2C20, panel
+ * +0x58), rider marker sway (0xC44E0, race HUD panel). The original renders
+ * once per tick, so they advance 60 steps per second; extra renders made
+ * them run faster.
+ * Fix: the panels and these globals are copied right before the normal
+ * render (pre). Around each extra render, the current state (post, as the
+ * normal render left it) is saved, pre is written, the render runs (it
+ * repeats the very step of the normal render and draws the same HUD), and
+ * post is written back: the next tick sees exactly the state after the
+ * normal render, as at 60.
+ * Words that look like pointers on either side (object created or replaced
+ * by a render) are never swapped: the extra render sees the current pointer,
+ * and a pointer it sets is kept (counted, logged).
+ * Also: no extra render while the gameplay tick is frozen (pause and the
+ * other blocking overlays, the game's own gate 0xAB170): the scene does not
+ * move and the pause menu runs as at 60.
+ * XBOX_FIX_HUD_RATE=0: previous behavior. */
+#define OM_VTABLE   0x0019CB24u     /* OverlayManager (OverlayManager_Construct 0xDD7D0) */
+#define OM_PANELS   19u             /* panel pointers at +0x10..+0x58 */
+#define HUD_GLOB    3u
+#define HUD_RG_MAX  (OM_PANELS + HUD_GLOB)
+#define HUD_WORDS   0x2800u         /* 0x9A7C bytes used */
+#define RDATA_LO    0x001872E0u     /* .rdata: panel vtables */
+#define RDATA_HI    0x001A9F68u
+
+/* Size of each panel, from its allocation in 0xDD7D0 (slot order). */
+static const uint32_t s_om_len[OM_PANELS] = {
+    0x5F0, 0x1314, 0x450, 0x590, 0x30, 0x498, 0x162C, 0x94, 0x28, 0x11DC,
+    0x340, 0x38C, 0x24, 0x590, 0x340, 0x11DC, 0x12D4, 0x11FC, 0x38C
+};
+/* Globals stepped by panel draws: 0xD06C0 pulse speed / scale, 0x56A60
+ * pulse speed / scale, 0xD4DE0 counter. */
+static const uint32_t s_hud_glob[HUD_GLOB][2] = { { 0x001BB25Cu, 8 }, { 0x001AA7D4u, 8 }, { 0x001E9888u, 4 } };
+
+typedef struct { uint32_t va, len, off, id; } HudRg;     /* off: word offset in the buffers; id: slot, or OM_PANELS + global */
+typedef struct { uint32_t st, n, nw; HudRg rg[HUD_RG_MAX]; } HudLayout;
+
+static struct {
+    HudLayout l;
+    uint32_t pre[HUD_WORDS], post[HUD_WORDS];
+    uint32_t tick;                  /* race tick at the copy */
+    int valid;                      /* pre is from the last normal render, no tick since */
+    unsigned bad_slot;              /* slots whose object is not a panel (logged once) */
+    unsigned long long swaps, words, ptr_kept, stale;
+} H;
+
+static int is_race_render(uint32_t st)
+{
+    return st >= 0x1000u && MEM32(st) >= 0x1000u && MEM32(MEM32(st) + 0x18u) == 0x000AB610u;
+}
+
+/* Panels of the race state st (only if it is InGameState), then the globals. */
+static uint32_t hud_layout(HudLayout *l, uint32_t st)
+{
+    uint32_t i, off = 0, om = is_race_render(st) ? MEM32(st + 0x38u) : 0;
+    l->st = st; l->n = 0;
+    if (om >= 0x1000u && om < 0x08000000u && MEM32(om) == OM_VTABLE) {
+        for (i = 0; i < OM_PANELS; i++) {
+            uint32_t p = MEM32(om + 0x10u + 4u * i), vt = p >= 0x1000u && p < 0x08000000u - s_om_len[i] ? MEM32(p) : 0;
+            /* every panel class shares the base methods +0x28 / +0x2C */
+            if (vt < RDATA_LO || vt >= RDATA_HI || MEM32(vt + 0x28u) != 0x000C3770u || MEM32(vt + 0x2Cu) != 0x000C3780u) {
+                if (p && !(H.bad_slot & (1u << i))) {
+                    H.bad_slot |= 1u << i;
+                    fprintf(stderr, "[FPSCAP] hud: slot %u (%08X, vt %08X) is not a panel, skipped\n", i, p, vt);
+                }
+                continue;
+            }
+            l->rg[l->n].va = p; l->rg[l->n].len = s_om_len[i]; l->rg[l->n].off = off; l->rg[l->n].id = i;
+            off += s_om_len[i] / 4u; l->n++;
+        }
+    }
+    for (i = 0; i < HUD_GLOB; i++) {
+        l->rg[l->n].va = s_hud_glob[i][0]; l->rg[l->n].len = s_hud_glob[i][1]; l->rg[l->n].off = off; l->rg[l->n].id = OM_PANELS + i;
+        off += s_hud_glob[i][1] / 4u; l->n++;
+    }
+    l->nw = off;
+    return l->n;
+}
+
+static int hud_ptr(uint32_t v)
+{
+    return !(v & 3u) && ((v >= 0x10000u && v < 0x08000000u) || (v > 0x80000000u && v < 0x84000000u));
+}
+/* a -> b looks like a pointer change (set, cleared or replaced) */
+static int hud_ptr_pair(uint32_t a, uint32_t b)
+{
+    return (a | b) && (!a || hud_ptr(a)) && (!b || hud_ptr(b));
+}
+
+/* Before the normal race render. */
+static void hud_capture(uint32_t st)
+{
+    uint32_t k, race = race_ptr();
+    H.valid = 0;
+    if (!hud_layout(&H.l, st)) return;
+    for (k = 0; k < H.l.n; k++) memcpy(&H.pre[H.l.rg[k].off], (const void *)XBOX_PTR(H.l.rg[k].va), H.l.rg[k].len);
+    H.tick = race ? MEM32(race + 0x18u) : 0;
+    H.valid = 1;
+}
+
+/* Before an extra render: post saved, pre written. 1 if done. */
+static int hud_swap_in(uint32_t app)
+{
+    static HudLayout l;
+    uint32_t k, w, race = race_ptr(), st = MEM32(app + 4u);
+    if (!H.valid) return 0;
+    if (st != H.l.st || (race ? MEM32(race + 0x18u) : 0) != H.tick || hud_layout(&l, st) != H.l.n
+        || memcmp(l.rg, H.l.rg, l.n * sizeof l.rg[0])) {
+        H.valid = 0; H.stale++;
+        return 0;
+    }
+    for (k = 0; k < l.n; k++) {
+        const HudRg *g = &l.rg[k];
+        uint32_t *m = (uint32_t *)XBOX_PTR(g->va), *pre = &H.pre[g->off], *post = &H.post[g->off];
+        memcpy(post, m, g->len);
+        if (!memcmp(pre, post, g->len)) continue;
+        for (w = 0; w < g->len / 4u; w++)
+            if (pre[w] != post[w] && !hud_ptr_pair(pre[w], post[w])) { m[w] = pre[w]; H.words++; }
+    }
+    H.swaps++;
+    return 1;
+}
+
+/* After the extra render: post written back. */
+static void hud_swap_out(void)
+{
+    uint32_t k, w;
+    for (k = 0; k < H.l.n; k++) {
+        const HudRg *g = &H.l.rg[k];
+        uint32_t *m = (uint32_t *)XBOX_PTR(g->va), *post = &H.post[g->off];
+        if (!memcmp(m, post, g->len)) continue;
+        for (w = 0; w < g->len / 4u; w++) {
+            if (m[w] == post[w]) continue;
+            if (hud_ptr_pair(post[w], m[w])) {
+                if (H.ptr_kept++ < 8u)
+                    fprintf(stderr, "[FPSCAP] hud: pointer set by an extra render kept, region %u +%X: %08X -> %08X\n",
+                            g->id, w * 4u, post[w], m[w]);
+                continue;
+            }
+            m[w] = post[w];
+        }
+    }
+}
+
+/* Probe (XBOX_FPS_CAP_CHECK=1): HUD regions before / after each extra
+ * render (after the fix's write-back): renders that changed each region,
+ * changed words. With XBOX_FIX_HUD_RATE=0 it lists what the render steps;
+ * with the fix, what is left. */
+static struct {
+    HudLayout l;
+    uint32_t buf[HUD_WORDS];
+    uint32_t *hist[HUD_RG_MAX];
+    unsigned long long renders[HUD_RG_MAX];
+} HP;
+
+static void hud_probe_copy(uint32_t app)
+{
+    uint32_t k;
+    hud_layout(&HP.l, MEM32(app + 4u));
+    for (k = 0; k < HP.l.n; k++) memcpy(&HP.buf[HP.l.rg[k].off], (const void *)XBOX_PTR(HP.l.rg[k].va), HP.l.rg[k].len);
+}
+
+static void hud_probe_diff(void)
+{
+    uint32_t k, w;
+    for (k = 0; k < HP.l.n; k++) {
+        const HudRg *g = &HP.l.rg[k];
+        const uint32_t *now = (const uint32_t *)XBOX_PTR(g->va), *was = &HP.buf[g->off];
+        if (!memcmp(now, was, g->len)) continue;
+        if (!HP.hist[g->id]) HP.hist[g->id] = (uint32_t *)calloc(g->len / 4u, sizeof(uint32_t));
+        HP.renders[g->id]++;
+        for (w = 0; w < g->len / 4u; w++)
+            if (now[w] != was[w] && HP.hist[g->id] && HP.hist[g->id][w]++ < 4u)
+                fprintf(stderr, "[FPSCAP] diff hud%u+%X (base %08X): %08X -> %08X\n", g->id, w * 4u, g->va, was[w], now[w]);
+    }
+}
+
+static void hud_probe_report(void)
+{
+    uint32_t id, w, shown = 0;
+    fprintf(stderr, "[FPSCAP]   hud regions (0-18 = OverlayManager slot, 19-21 = globals 1BB25C 1AA7D4 1E9888): renders changed");
+    for (id = 0; id < HUD_RG_MAX; id++) if (HP.renders[id]) fprintf(stderr, " %u:%llu", id, HP.renders[id]);
+    fprintf(stderr, "; words (region+offset:count)");
+    for (id = 0; id < HUD_RG_MAX; id++) {
+        uint32_t len = id < OM_PANELS ? s_om_len[id] : s_hud_glob[id - OM_PANELS][1];
+        if (!HP.hist[id]) continue;
+        for (w = 0; w < len / 4u && shown < 48u; w++)
+            if (HP.hist[id][w]) { fprintf(stderr, " %u+%X:%u", id, w * 4u, HP.hist[id][w]); shown++; }
+    }
+    fputc('\n', stderr);
+}
+
+/* GameState_ShouldSkipGameplayTick 0xAB170 (thiscall on InGameState, no
+ * argument, reads only): nonzero while the gameplay tick is frozen (pause,
+ * blocking overlay, HUD overlay 0x1E3E08, lesson). */
+void sub_000AB170(void);
+static int gameplay_frozen(uint32_t st)
+{
+    uint32_t sv[7] = { g_eax, g_ecx, g_edx, g_ebx, g_esi, g_edi, g_seh_ebp }, esp0 = g_esp;
+    int r;
+    g_ecx = st;
+    g_esp -= 4; MEM32(g_esp) = 0;          /* fake return address */
+    sub_000AB170();
+    r = (g_eax & 0xFFu) != 0;
+    g_esp = esp0;
+    g_eax = sv[0]; g_ecx = sv[1]; g_edx = sv[2]; g_ebx = sv[3]; g_esi = sv[4]; g_edi = sv[5]; g_seh_ebp = sv[6];
+    return r;
+}
+
 /* ── statistics ───────────────────────────────────────────────── */
 
 static void report(int force)
@@ -309,6 +531,8 @@ static void report(int force)
     if (I.on)
         fprintf(stderr, " | interp[n=%llu memory!=tick=%llu alpha>=1=%llu cam_cut=%llu rider_cut=%llu bones_not_interp=%llu riders_restored=%llu] stalls_ignored=%llu",
                 I.n_interp, I.n_mismatch, I.n_alpha1, I.n_cut_cam, I.n_cut_rider, I.n_badrot, P.rider_restored, s_outliers);
+    if (s_fix_hud)
+        fprintf(stderr, " | hud[swaps=%llu words=%llu stale=%llu pointers_kept=%llu]", H.swaps, H.words, H.stale, H.ptr_kept);
     fprintf(stderr, " race_tick=%u state=%u\n", rt, race ? MEM32(race + 0x1Cu) : 0);
     fflush(stderr);
 #define ACC(f) S.f += P.f
@@ -335,6 +559,7 @@ static void report(int force)
             fputc('\n', stderr);
         }
         if (s_pg) pages_report();
+        hud_probe_report();
     }
 }
 
@@ -349,8 +574,9 @@ static int extra_allowed(uint32_t app)
     /* Allow list: race (InGameState 0xAB610) and menus (0x7CBD0), checked to
      * have no logic effect. The other states (boot, videos, loading) advance
      * the state machine in their render or block: no extra render, as in the
-     * original. */
-    if (va == 0x000AB610u) return (int32_t)MEM32(st + 0x6Cu) <= 0;
+     * original. With the HUD fix, none either while the gameplay tick is
+     * frozen (pause): see the HUD section. */
+    if (va == 0x000AB610u) return (int32_t)MEM32(st + 0x6Cu) <= 0 && !(s_fix_hud && gameplay_frozen(st));
     return va == 0x0007CBD0u;
 }
 
@@ -600,6 +826,197 @@ static void interp_end(void)
     I.written = 0;
 }
 
+/* ── Leg smoothing (XBOX_FPS_SMOOTH_LEGS=1; off by default) ────────
+ * In a carve, the board suspension (rider +0x1F8, ground physics 0x27B63 /
+ * 0x27D28) can oscillate at 12-20 Hz; the board node follows it (0x3BD83)
+ * and the legs bend with it on every tick: the board and the legs shake
+ * under the hips. Display only: each race render shows the legs and the
+ * board (bones 14-20) relative to the root as the average of the last 4
+ * ticks (with interpolation: the averages at tick N-1 and N, blended by
+ * alpha). The root, the lean and the upper body are untouched.
+ * Only while riding on the ground (+0x454 == 2 and +0x458 == 3): the history
+ * restarts on any other state (jump, landing, fall, trick), on a teleport and
+ * on a local step larger than 20 deg or 20 units in one tick.
+ * The bones are written before the render and written back bit exact after
+ * it; the logic never sees them. At 60 fps the render and tick hooks are
+ * installed only for this (no interpolation, no extra frame). */
+#define LEG_FIRST    14u
+#define LEG_N        7u             /* bones 14..20 */
+#define LEG_AVG      4u
+#define LEG_HIST     (LEG_AVG + 1u)
+#define LEG_STEP_COS 0.98481f       /* cos(10 deg) = local bone turned by more than 20 deg */
+#define LEG_STEP_LEN 20.0f
+#define LEG_STATE    0x454u
+#define LEG_MODE     0x458u
+
+typedef struct { float q[4], t[3]; } LegBone;
+typedef struct {
+    uint32_t va;                            /* rider */
+    uint32_t n;                             /* valid ticks in h[], newest first */
+    LegBone  h[LEG_HIST][LEG_N];
+    float    raw[(1u + LEG_N) * 16u];       /* tick N as written by the tick: root, bones 14..20 */
+    float    save[LEG_N * 16u];             /* bones before the render */
+    int      written;
+} LegRider;
+
+static struct {
+    int on;
+    DWORD tid;                              /* thread running the ticks */
+    LegRider r[NR_MAX];
+    unsigned long long n_render, n_reset, n_skip;
+} L;
+
+/* Unit rows of a 4x4 matrix's rotation, or 0 (degenerate, scaled, mirrored). */
+static int leg_rows(const float *m)
+{
+    float n[3];
+    return rot_ok(m, n) == 1 && fabsf(n[0] - 1.0f) < 0.02f && fabsf(n[1] - 1.0f) < 0.02f && fabsf(n[2] - 1.0f) < 0.02f;
+}
+
+/* Bone relative to the root (row vectors: W = L * R): L = W * R^T. */
+static void leg_local(const float *root, const float *w, LegBone *o)
+{
+    float m[16] = { 0 };
+    int i, j, k;
+    for (i = 0; i < 3; i++)
+        for (j = 0; j < 3; j++) {
+            float a = 0.0f;
+            for (k = 0; k < 3; k++) a += w[4 * i + k] * root[4 * j + k];
+            m[4 * i + j] = a;
+        }
+    m2q(m, o->q);
+    for (j = 0; j < 3; j++) {
+        float a = 0.0f;
+        for (k = 0; k < 3; k++) a += (w[12 + k] - root[12 + k]) * root[4 * j + k];
+        o->t[j] = a;
+    }
+}
+
+/* Average of h[from .. from+cnt-1] (quaternions aligned on h[from]). */
+static void leg_mean(const LegRider *r, uint32_t b, uint32_t from, uint32_t cnt, LegBone *o)
+{
+    const float *q0 = r->h[from][b].q;
+    float l;
+    uint32_t k;
+    int i;
+    memset(o, 0, sizeof *o);
+    for (k = from; k < from + cnt; k++) {
+        const LegBone *x = &r->h[k][b];
+        float sg = (x->q[0] * q0[0] + x->q[1] * q0[1] + x->q[2] * q0[2] + x->q[3] * q0[3]) < 0.0f ? -1.0f : 1.0f;
+        for (i = 0; i < 4; i++) o->q[i] += sg * x->q[i];
+        for (i = 0; i < 3; i++) o->t[i] += x->t[i];
+    }
+    l = sqrtf(o->q[0] * o->q[0] + o->q[1] * o->q[1] + o->q[2] * o->q[2] + o->q[3] * o->q[3]);
+    for (i = 0; i < 4; i++) o->q[i] /= l;
+    for (i = 0; i < 3; i++) o->t[i] /= (float)cnt;
+}
+
+/* After each race tick: history of the local leg pose of every rider. */
+static void legs_tick(void)
+{
+    uint32_t race = race_ptr(), nr, i, b;
+    if (!L.on) return;
+    if (!L.tid) L.tid = GetCurrentThreadId();
+    if (!race || MEM32(race + 0x1Cu) != 4u) { for (i = 0; i < NR_MAX; i++) L.r[i].n = 0; return; }
+    nr = MEM32(race + 0x88u); if (nr > NR_MAX) nr = NR_MAX;
+    for (i = 0; i < NR_MAX; i++) {
+        LegRider *r = &L.r[i];
+        uint32_t va = i < nr ? MEM32(race + 0xC4u + 4u * i) : 0;
+        const float *pose;
+        LegBone cur[LEG_N];
+        int ok;
+        if (va < 0x1000u) { r->va = 0; r->n = 0; continue; }
+        if (va != r->va) { r->va = va; r->n = 0; }
+        pose = (const float *)XBOX_PTR(va + POSE_OFF);
+        ok = MEM32(va + LEG_STATE) == 2u && MEM32(va + LEG_MODE) == 3u && leg_rows(pose);
+        for (b = 0; ok && b < LEG_N; b++) {
+            const float *w = pose + 16u * (LEG_FIRST + b);
+            if (!leg_rows(w)) { ok = 0; break; }
+            leg_local(pose, w, &cur[b]);
+            if (r->n) {
+                const LegBone *p = &r->h[0][b];
+                float d = fabsf(cur[b].q[0] * p->q[0] + cur[b].q[1] * p->q[1] + cur[b].q[2] * p->q[2] + cur[b].q[3] * p->q[3]);
+                if (d < LEG_STEP_COS || dist3(cur[b].t, p->t) > LEG_STEP_LEN) { r->n = 0; L.n_reset++; }
+            }
+        }
+        if (ok && r->n && dist3(pose + 12, r->raw + 12) > TELEPORT) { r->n = 0; L.n_reset++; }
+        if (!ok) { if (r->n) L.n_reset++; r->n = 0; continue; }
+        memmove(&r->h[1], &r->h[0], (LEG_HIST - 1u) * sizeof r->h[0]);
+        memcpy(r->h[0], cur, sizeof cur);
+        if (r->n < LEG_HIST) r->n++;
+        memcpy(r->raw, pose, 16u * sizeof(float));
+        memcpy(r->raw + 16, pose + 16u * LEG_FIRST, LEG_N * 16u * sizeof(float));
+    }
+}
+
+/* Before a race render (after interp_begin): averaged legs on the root shown. */
+static void legs_begin(void)
+{
+    uint32_t race = race_ptr(), nr, i, b;
+    if (!L.on || !race || GetCurrentThreadId() != L.tid || MEM32(race + 0x1Cu) != 4u) return;
+    nr = MEM32(race + 0x88u); if (nr > NR_MAX) nr = NR_MAX;
+    for (i = 0; i < nr; i++) {
+        LegRider *r = &L.r[i];
+        float *pose;
+        uint32_t cnt;
+        float t = I.written ? I.alpha : 1.0f;
+        if (r->n < 2u || r->va != MEM32(race + 0xC4u + 4u * i)) continue;
+        pose = (float *)XBOX_PTR(r->va + POSE_OFF);
+        /* without interpolation, memory must still be tick N */
+        if (!I.written && (memcmp(pose, r->raw, 16u * sizeof(float))
+                           || memcmp(pose + 16u * LEG_FIRST, r->raw + 16, LEG_N * 16u * sizeof(float)))) { L.n_skip++; continue; }
+        if (!leg_rows(pose)) { L.n_skip++; continue; }
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        memcpy(r->save, pose + 16u * LEG_FIRST, sizeof r->save);
+        cnt = r->n < LEG_AVG ? r->n : LEG_AVG;
+        for (b = 0; b < LEG_N; b++) {
+            LegBone a, o;
+            float m[16] = { 0 }, *w = pose + 16u * (LEG_FIRST + b);
+            int j, k, c;
+            leg_mean(r, b, 0, cnt, &o);
+            if (t < 1.0f) {     /* interpolated root: the average one tick earlier, blended */
+                uint32_t c1 = r->n - 1u < LEG_AVG ? r->n - 1u : LEG_AVG;
+                float d, l;
+                leg_mean(r, b, 1, c1, &a);
+                d = a.q[0] * o.q[0] + a.q[1] * o.q[1] + a.q[2] * o.q[2] + a.q[3] * o.q[3];
+                for (k = 0; k < 4; k++) o.q[k] = (d < 0.0f ? -a.q[k] : a.q[k]) * (1.0f - t) + o.q[k] * t;
+                l = sqrtf(o.q[0] * o.q[0] + o.q[1] * o.q[1] + o.q[2] * o.q[2] + o.q[3] * o.q[3]);
+                for (k = 0; k < 4; k++) o.q[k] /= l;
+                for (k = 0; k < 3; k++) o.t[k] = a.t[k] * (1.0f - t) + o.t[k] * t;
+            }
+            /* W = L * R (rotation rows, then translation) */
+            q2m(o.q, m);
+            for (j = 0; j < 3; j++)
+                for (c = 0; c < 3; c++) {
+                    float s2 = 0.0f;
+                    for (k = 0; k < 3; k++) s2 += m[4 * j + k] * pose[4 * k + c];
+                    w[4 * j + c] = s2;
+                }
+            for (c = 0; c < 3; c++) {
+                float s2 = pose[12 + c];
+                for (k = 0; k < 3; k++) s2 += o.t[k] * pose[4 * k + c];
+                w[12 + c] = s2;
+            }
+        }
+        r->written = 1;
+        L.n_render++;
+    }
+}
+
+/* After the render: the bones as they were before it, bit exact. */
+static void legs_end(void)
+{
+    uint32_t i;
+    if (!L.on) return;
+    for (i = 0; i < NR_MAX; i++) {
+        LegRider *r = &L.r[i];
+        if (!r->written) continue;
+        memcpy((void *)XBOX_PTR(r->va + POSE_OFF + 0x40u * LEG_FIRST), r->save, sizeof r->save);
+        r->written = 0;
+    }
+}
+
 /* Test XBOX_FPS_CAP_CHECK=3: the same extra render done again WITHOUT
  * interpolation from the same state; the rider words (and RNG) that differ
  * between the two renders are values written by the render that DEPEND on the
@@ -649,6 +1066,7 @@ static int extra_render(uint32_t app)
     if (s.check) {
         snap_bases(&a, app);
         snap_copy(&a);
+        hud_probe_copy(app);
         sample = s_pg && (n++ % 500u) == 250u;
         if (sample) { pg_before = (uint64_t *)malloc(PG_MAX * sizeof(uint64_t)); if (pg_before) pages_hash(pg_before); else sample = 0; }
     }
@@ -667,6 +1085,7 @@ static int extra_render(uint32_t app)
             uint32_t rng[12], i;
             static uint8_t rsv[NR_MAX][0x5A00];
             uint32_t rva[NR_MAX], nr = 0, race = race_ptr();
+            int hud;
             for (i = 0; i < 12; i++) rng[i] = MEM32(0x001FAD70u + 4u * i);
             /* Interpolation: the render derives a few pose values in the
              * rider (+0x4DF0..) from the interpolated state; an extra render
@@ -680,6 +1099,8 @@ static int extra_render(uint32_t app)
                 }
             }
             s_measured = 0;
+            /* HUD: this render repeats the normal render's step (HUD section). */
+            hud = s_fix_hud && hud_swap_in(app);
             {
                 int sv_in = s_in_extra;
                 s_in_extra = 1;
@@ -687,6 +1108,7 @@ static int extra_render(uint32_t app)
                 if (s.check == 3 && nr) dep_experiment(app, rva, rsv, nr, rng);
                 s_in_extra = sv_in;
             }
+            if (hud) hud_swap_out();
             for (i = 0; i < nr; i++)
                 if (rva[i] >= 0x1000u && memcmp((const void *)XBOX_PTR(rva[i]), rsv[i], 0x5A00u)) {
                     memcpy((void *)XBOX_PTR(rva[i]), rsv[i], 0x5A00u);
@@ -714,6 +1136,7 @@ static int extra_render(uint32_t app)
     }
     if (s.check) {
         unsigned m = snap_diff(&a);
+        hud_probe_diff();
         P.snaps++;
         rva_note(MEM32(MEM32(MEM32(app + 4u)) + 0x18u), ok);
         if (m & (1u << RG_RNG)) P.d_rng++;
@@ -802,7 +1225,11 @@ static void hook_AB610(void)
     double t0 = now_ms();
     int k;
     double t_in;
+    if (s_fix_hud && s.cap != 60 && !s_in_extra && app >= 0x1000u && MEM32(app + 4u) == state
+        && (!s.tid || GetCurrentThreadId() == s.tid))
+        hud_capture(state);
     interp_begin(state);
+    legs_begin();
     if (s_trace && GetCurrentThreadId() == s.tid) {
         /* position as the render sees it (interpolated or tick N) */
         uint32_t race = race_ptr(), r0 = race && MEM32(race + 0x88u) ? MEM32(race + 0xC4u) : 0;
@@ -820,6 +1247,7 @@ static void hook_AB610(void)
     } else {
         sub_000AB610();
     }
+    legs_end();
     interp_end();
     if ((g_eax & 0xFFu) && (!s.tid || GetCurrentThreadId() == s.tid)) {
         maybe_stall();
@@ -931,6 +1359,7 @@ static void hook_B2750(void)
         report(0);
     }
 tick:
+    H.valid = 0;          /* a tick follows: the HUD copy belongs to the previous one */
     P.ticks_ev++;
     s.last_tick_ret = now_ms();
     s.from_wait = 1;
@@ -996,6 +1425,7 @@ static void hook_AD4A0(void)
         }
     }
     s.from_wait = 0;
+    legs_tick();
     race = race_ptr();
     if (s_dump_at && race && MEM32(race + 0x1Cu) == 4u) {
         uint32_t rt = MEM32(race + 0x18u), r0 = MEM32(race + 0xC4u), k;
@@ -1016,11 +1446,18 @@ static void hook_AD4A0(void)
     }
 }
 
-static void fps_cap_atexit(void) { if (g_fps_cap_on) report(1); }
+static void fps_cap_atexit(void)
+{
+    if (!g_fps_cap_on) return;
+    report(1);
+    if (L.on && (s.log || s.check))
+        fprintf(stderr, "[LEGS] renders=%llu resets=%llu skipped(memory!=tick)=%llu\n", L.n_render, L.n_reset, L.n_skip);
+}
 
 void fps_cap_init(void)
 {
     extern int d3d8_monitor_hz(HWND hwnd);     /* d3d8_sync.h */
+    extern void d3d8_sync_set_pace(int fps);   /* d3d8_sync.h */
     const char *e = getenv("XBOX_FPS_CAP"), *sy = getenv("XBOX_SYNC");
     LARGE_INTEGER f;
     int cap = 60, hz = d3d8_monitor_hz(NULL);
@@ -1048,7 +1485,11 @@ void fps_cap_init(void)
         cap = hz > 61 && hz <= 1000 ? hz : 60;
         fprintf(stderr, "[FPSCAP] XBOX_SYNC=%s: cap %d lowered to the display (%d Hz) -> %d\n", sy, was, hz, cap);
     }
-    if (cap == 60) return;    /* default: hook not installed */
+    /* Adaptive sync compares the frames' arrival to this pace when it is
+     * below the display (60 included: the game's own pace, no hook). */
+    d3d8_sync_set_pace(cap);
+    e = getenv("XBOX_FPS_SMOOTH_LEGS"); L.on = e && e[0] == '1';
+    if (cap == 60 && !L.on) return;    /* default: hook not installed */
     QueryPerformanceFrequency(&f);
     s.freq = (double)f.QuadPart;
     s.cap = cap;
@@ -1058,6 +1499,7 @@ void fps_cap_init(void)
     e = getenv("XBOX_FPS_CAP_DUP"); s.dup = e ? atoi(e) : 0;     /* test, see hook_AB610 */
     e = getenv("XBOX_FPS_INTERP_DUMP"); s_dump_at = e ? atoi(e) : 0;
     e = getenv("XBOX_FPS_INTERP"); I.on = e && *e ? e[0] == '1' : 1;     /* default 1 when cap != 60 */
+    if (cap == 60) I.on = 0;            /* 60 with leg smoothing: no interpolation, no extra frame */
     e = getenv("XBOX_FPS_INTERP_SYNTH"); I.synth = e && e[0] == '1';   /* DUP test: alpha = k / (DUP + 1) */
     e = getenv("XBOX_FPS_INTERP_LOG");
     if (e && *e) { I.log = atoi(e); e = strchr(e, '@'); I.log_from = e ? (uint32_t)atoi(e + 1) : 0; }
@@ -1072,6 +1514,8 @@ void fps_cap_init(void)
         if (s_trace) setvbuf(s_trace, NULL, _IOFBF, 1 << 16);
     }
     e = getenv("XBOX_FPS_CAP_NOSKIP"); s.noskip = e && e[0] == '1';   /* test: render even if it delays the tick */
+    e = getenv("XBOX_FIX_HUD_RATE"); s_fix_hud = !(e && e[0] == '0');  /* default 1 */
+    fprintf(stderr, "[FPSCAP] XBOX_FIX_HUD_RATE=%d (overlay animations at tick rate, no extra frame while paused)\n", s_fix_hud);
     e = getenv("XBOX_D3D_DUMP_FROM"); s.dump_from = (e && getenv("XBOX_D3D_DUMP")) ? (unsigned)atoi(e) : 0;
     if (s.check) {
         int rg;
@@ -1081,16 +1525,17 @@ void fps_cap_init(void)
     P.t0 = s_t0_run = now_ms();
     g_fps_cap_on = 1;
     atexit(fps_cap_atexit);
-    fprintf(stderr, "[FPSCAP] cap %d%s (%s; logic 60 Hz)%s\n",
-            cap, cap ? " fps" : " = no limit", I.on ? "camera + riders interpolation" : "duplicates without a tick",
-            s.check ? "; state probe active" : "");
+    fprintf(stderr, "[FPSCAP] cap %d%s (%s; logic 60 Hz)%s%s\n",
+            cap, cap ? " fps" : " = no limit",
+            cap == 60 ? "no extra frame" : I.on ? "camera + riders interpolation" : "duplicates without a tick",
+            s.check ? "; state probe active" : "", L.on ? "; leg smoothing" : "");
 }
 
 void (*fps_cap_lookup(unsigned int xbox_va))(void)
 {
-    if (xbox_va == 0x000B2750u) return hook_B2750;
+    if (xbox_va == 0x000B2750u && s.cap != 60) return hook_B2750;
     if (xbox_va == 0x000AB610u) return hook_AB610;
-    if (xbox_va == 0x0007CBD0u) return hook_7CBD0;
-    if (xbox_va == 0x000AD4A0u && (I.on || s_dump_at)) return hook_AD4A0;
+    if (xbox_va == 0x0007CBD0u && s.cap != 60) return hook_7CBD0;
+    if (xbox_va == 0x000AD4A0u && (I.on || s_dump_at || L.on)) return hook_AD4A0;
     return 0;
 }

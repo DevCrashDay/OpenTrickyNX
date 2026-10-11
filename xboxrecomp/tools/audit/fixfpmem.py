@@ -110,17 +110,32 @@ def disassemble(data, sections, start, end):
     tmp = os.path.join(HERE, ".fpmem_tmp.bin")
     io.open(tmp, "wb").write(data[raw:raw + (end - start)])
     try:
-        out = subprocess.run(
+        # --insn-width=16: one line per instruction (same reason as
+        # fixfpbranch.py). With objdump's default of 7 bytes per line a longer
+        # instruction wraps its tail onto a line of bare bytes, which the parser
+        # below reads as an instruction named after its first byte. Harmless
+        # here so far (such a name is never x87 arithmetic: no
+        # function whose list changes), but the listing is now exact.
+        proc = subprocess.run(
             ["objdump", "-D", "-b", "binary", "-m", "i386", "-M", "intel",
-             "--adjust-vma=0x%X" % start, tmp],
-            capture_output=True, text=True, timeout=60).stdout
-    except (OSError, subprocess.SubprocessError):
-        return []
+             "--insn-width=16", "--adjust-vma=0x%X" % start, tmp],
+            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Stop, never skip: an empty listing here used to skip *every* function
+        # and the regen still exited 0. That is what a Windows python does (it
+        # finds no `objdump`), and so would LLVM's objdump (no `-b binary`).
+        sys.exit("fixfpmem: objdump failed: %s -- needs GNU objdump "
+                 "(PATH=/c/msys64/ucrt64/bin:$PATH)" % exc)
     finally:
         try:
             os.remove(tmp)
         except OSError:
             pass
+    if proc.returncode != 0:
+        sys.exit("fixfpmem: objdump exited %d -- needs GNU objdump "
+                 "(PATH=/c/msys64/ucrt64/bin:$PATH): %s"
+                 % (proc.returncode, proc.stderr.strip()[:200]))
+    out = proc.stdout
     insns = []
     for line in out.split("\n"):
         m = re.match(r"^\s*([0-9a-f]+):\s+(?:[0-9a-f]{2} )+\s*(\S+)\s*(.*)$", line)

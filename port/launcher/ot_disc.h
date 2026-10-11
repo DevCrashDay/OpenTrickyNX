@@ -56,6 +56,10 @@ typedef struct {
 /* SSX Tricky's title ID in default.xbe's certificate ("EA" 0x4541, game 4;
  * read on the USA disc). */
 #define OT_SSX_TRICKY_USA_TITLE_ID 0x45410004u
+/* The entry point of the USA disc's default.xbe, the one SSX Tricky.exe was
+ * recompiled from (YOUR_GAME_ENTRY_POINT in port/src/main.c): the game
+ * refuses any other, so the launcher checks it too (ot_disc_check_entry). */
+#define OT_SSX_TRICKY_USA_ENTRY 0x00154218u
 
 /* Look at `iso` without decoding anything heavy (reads a few kilobytes).
  * OK needs the game's title ID and the North America region flag; with

@@ -81,17 +81,33 @@ def disassemble(data, sections, start, end):
     tmp = os.path.join(HERE, ".fpbranch_tmp.bin")
     io.open(tmp, "wb").write(data[raw:raw + (end - start)])
     try:
-        out = subprocess.run(
+        # --insn-width=16: one line per instruction. With objdump's default of 7
+        # bytes per line, a longer instruction (movss [esp+0x88],xmm1 is 9) wraps
+        # its tail onto a line of bare bytes, which the parser below read as an
+        # instruction named "00". That fake mnemonic is not in FLAG_SAFE, so it cut
+        # the walk back to `test ah, IMM` and the whole function was skipped:
+        # sub_0013FAA0 (instance collision broad phase) kept both of its parity
+        # branches as if(1).
+        proc = subprocess.run(
             ["objdump", "-D", "-b", "binary", "-m", "i386", "-M", "intel",
-             "--adjust-vma=0x%X" % start, tmp],
-            capture_output=True, text=True, timeout=60).stdout
-    except (OSError, subprocess.SubprocessError):
-        return []
+             "--insn-width=16", "--adjust-vma=0x%X" % start, tmp],
+            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Stop, never skip: an empty listing here used to skip *every* function
+        # and the regen still exited 0. That is what a Windows python does (it
+        # finds no `objdump`), and so would LLVM's objdump (no `-b binary`).
+        sys.exit("fixfpbranch: objdump failed: %s -- needs GNU objdump "
+                 "(PATH=/c/msys64/ucrt64/bin:$PATH)" % exc)
     finally:
         try:
             os.remove(tmp)
         except OSError:
             pass
+    if proc.returncode != 0:
+        sys.exit("fixfpbranch: objdump exited %d -- needs GNU objdump "
+                 "(PATH=/c/msys64/ucrt64/bin:$PATH): %s"
+                 % (proc.returncode, proc.stderr.strip()[:200]))
+    out = proc.stdout
     insns = []
     for line in out.split("\n"):
         m = re.match(r"^\s*([0-9a-f]+):\s+(?:[0-9a-f]{2} )+\s*(\S+)\s*(.*)$", line)

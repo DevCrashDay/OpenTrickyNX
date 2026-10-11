@@ -679,7 +679,11 @@ void nv2a_live_pb_tick(uint8_t *mem_base)
                                  ? 16u : (unsigned)PRESENT_FALLBACK_MS;
             /* While the title flips surfaces, presents happen at the flips
              * (pgraph_d3d11_flipping); a timer present lands mid-frame. */
-            if (d3d8_MsSincePresent() >= fallback_ms && !pgraph_d3d11_flipping()) {
+            /* A movie frame is presented only once the GPU is done
+             * with the previous one, so this thread never blocks in the
+             * driver and keeps acknowledging the title's fences. */
+            if (d3d8_MsSincePresent() >= fallback_ms && !pgraph_d3d11_flipping()
+                && (!d3d8_GuestFramebufferActive() || d3d8_VideoPresentReady())) {
             g_last_present = now;
             pgraph_d3d11_flush();
 

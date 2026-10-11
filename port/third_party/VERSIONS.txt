@@ -7,6 +7,14 @@ from their official repositories; each folder keeps its licence file.
              (CMakeLists.txt, cmake, include, src, wayland-protocols, build-scripts/*.cmake)
   freetype/  FreeType 2.14.3      https://github.com/freetype/freetype        FTL or GPLv2 (LICENSE.TXT, docs/FTL.TXT)
              (used under the FTL, which asks for a credit in the documentation)
+  miniz/     miniz 3.1.2          https://github.com/richgel999/miniz         MIT (LICENSE)
+             (miniz.c and miniz.h of the release file miniz-3.1.2.zip, sha256
+             f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a)
+  monocypher/ Monocypher 4.0.2    https://github.com/LoupVaillant/Monocypher  BSD-2-Clause or CC0 (LICENCE.md)
+             (src/monocypher.[ch], src/optional/monocypher-ed25519.[ch]: the
+             release signature; taken from the crate monocypher-sys
+             4.0.2, sha256-checked against crates.io, whose Monocypher/ is the
+             4.0.2 tree -- hence "version __git__" in the file headers)
 
 Fonts in port/launcher/app/ui/fonts: Inter, Bebas Neue, Exo 2 (SIL Open Font
 License 1.1, OFL-*.txt beside them), from https://github.com/google/fonts.

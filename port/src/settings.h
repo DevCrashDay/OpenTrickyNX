@@ -26,6 +26,7 @@
 #include <stddef.h>
 
 #define SETTINGS_FILE_NAME   "settings.ini"
+#define SETTINGS_LAUNCHER_EXE "OpenTricky.exe"  /* marks the install root (settings_install_root_of) */
 #define SETTINGS_VERSION     1
 #define SETTINGS_VALUE_MAX   1024       /* bytes per value, terminator included (paths in UTF-8) */
 
@@ -59,7 +60,8 @@ enum {
                                  * the Original Xbox preset turns these off */
 #define SETTING_HIDDEN    0x02u /* not shown by the launcher; written only when it is not the default */
 #define SETTING_LAUNCHER  0x04u /* the launcher's own (the game does not use it) */
-#define SETTING_PENDING   0x08u /* not applied by the game yet (its variable is not read) */
+#define SETTING_PENDING   0x08u /* not applied by the game yet (its variable is not read);
+                                 * written only when it is not the default */
 
 typedef struct SettingChoice {
     const char *token;          /* in the file */
@@ -103,18 +105,28 @@ enum {
     S_KEY_FIRST,
     S_PAD_FIRST = S_KEY_FIRST + SETTINGS_KEY_CONTROLS,
     /* GAME */
-    S_DISC_IMAGE = S_PAD_FIRST + SETTINGS_PAD_CONTROLS, S_SAVE_FOLDER, S_SAVE_BACKUP,
+    S_DISC_IMAGE = S_PAD_FIRST + SETTINGS_PAD_CONTROLS, S_SAVE_FOLDER, S_SAVE_PROFILE, S_SAVE_BACKUP,
     S_PAUSE_IN_BACKGROUND, S_MUTE_IN_BACKGROUND,
     /* ADVANCED */
-    S_CHECK_UPDATES, S_UPDATE_CHANNEL, S_SKIP_LAUNCHER, S_SHOW_FPS, S_THEME, S_LOG_FILE,
+    S_CHECK_UPDATES, S_UPDATE_CHANNEL, S_SKIP_LAUNCHER, S_SHOW_FPS, S_THEME, S_SMOOTH_LEGS, S_LOG_FILE,
     /* hidden */
     S_SMOOTH_MOTION, S_HD_TEXTURES_MENUS, S_FIX_CULL_WINDING, S_FIX_OCCLUSION,
     S_FIX_TEX_PASSTHROUGH, S_FIX_GAMMA, S_FIX_KICKWAIT,
     SETTINGS_COUNT
 };
 
+#define SETTINGS_EXTRA_MAX   8192       /* bytes of lines kept for a newer version */
+#define SETTINGS_IGNORED_MAX 256        /* bytes of the list of ignored keys */
+
 typedef struct Settings {
     char v[SETTINGS_COUNT][SETTINGS_VALUE_MAX];   /* ~110 KB: keep it static or on the heap */
+    /* The Key=Value lines of the file this version does not know (a newer
+     * version's settings, an older one's): kept as read, and written back
+     * in their section, so saving never drops them. Internal format. */
+    char extra[SETTINGS_EXTRA_MAX];
+    /* The keys of the lines ignored at the last read (unknown key, value
+     * not valid, line not understood), "Key, Key", "" for none. */
+    char ignored[SETTINGS_IGNORED_MAX];
 } Settings;
 
 /* The table: SETTINGS_COUNT entries, in the order of the ids. */
@@ -155,13 +167,15 @@ enum {
     SETTINGS_LOAD_ERROR         /* could not be read: defaults */
 };
 /* Defaults, then the file at `path` (UTF-8). `bad`, when not NULL, gets the
- * number of lines ignored (unknown key, invalid value). */
+ * number of lines ignored (unknown key, invalid value); their keys are in
+ * s->ignored, and the unknown keys' lines in s->extra (written back). */
 int  settings_load(Settings *s, const char *path, int *bad);
 /* Parse a whole file already in memory (the same rules; for tests and the launcher). */
 int  settings_parse(Settings *s, const char *text, size_t len, int *bad);
 /* Write the whole file, with comments, through "<path>.new" then a rename,
- * so a failure never leaves half a file. Hidden settings are written only
- * when not at their default. 1 = written. */
+ * so a failure never leaves half a file. Hidden and pending settings are
+ * written only when not at their default; the lines kept from the file
+ * read (s->extra) are written back. 1 = written. */
 int  settings_save(const Settings *s, const char *path);
 /* The same text, into `out` (NUL-terminated). Returns the full length
  * (larger than out_sz - 1 when it did not fit). */
@@ -169,7 +183,7 @@ size_t settings_format(const Settings *s, char *out, size_t out_sz);
 
 /* ── Where the file is ── */
 enum {
-    SETTINGS_AT_GAME_FOLDER,    /* beside the executables */
+    SETTINGS_AT_GAME_FOLDER,    /* in the install root, beside OpenTricky.exe */
     SETTINGS_AT_DOCUMENTS,      /* Documents\My Games\SSX Tricky: the game's folder is read-only */
     SETTINGS_AT_NONE            /* neither can be used */
 };
@@ -178,12 +192,22 @@ enum {
  *    Documents if it exists, else <game folder>\settings.ini (no file yet);
  *  - write: <game folder>\settings.ini if that folder can be written, else
  *    Documents\My Games\SSX Tricky\settings.ini (folder created).
- * Returns SETTINGS_AT_*. `game_dir` and `docs_dir` NULL = this executable's
- * folder and the real Documents\My Games\SSX Tricky (Windows); tests pass
- * their own. */
+ * Returns SETTINGS_AT_*. `game_dir` and `docs_dir` NULL = the install root
+ * (settings_install_root) and the real Documents\My Games\SSX Tricky
+ * (Windows); tests pass their own. */
 int  settings_locate(const char *game_dir, const char *docs_dir, int for_write, char *out, size_t out_sz);
 /* This executable's folder and Documents\My Games\SSX Tricky, in UTF-8 (Windows). 1 = found. */
 int  settings_game_dir(char *out, size_t out_sz);
 int  settings_docs_dir(char *out, size_t out_sz);
+/* The install root, in UTF-8: the folder of OpenTricky.exe, where settings.ini
+ * and the player's files are (saves, logs, crash reports, screenshots). The
+ * game itself is in its bin\ subfolder; an older or a developer's install has
+ * everything in one folder. So: `exe_dir` itself, except when `exe_dir` is a
+ * folder named "bin" without OpenTricky.exe whose parent has OpenTricky.exe,
+ * then that parent. 1 = found. */
+int  settings_install_root_of(const char *exe_dir, char *out, size_t out_sz);
+/* settings_install_root_of(this executable's folder). settings_locate's game
+ * folder (game_dir NULL) is this one. */
+int  settings_install_root(char *out, size_t out_sz);
 
 #endif /* SSX_SETTINGS_H */

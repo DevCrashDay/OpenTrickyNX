@@ -27,7 +27,7 @@
  *   copy of tick N is written back (bit exact). Whole riders restored as they
  *   were after an extra render. Teleport (> 400 units in one tick) or camera
  *   cut (> 60 deg): state N (duplicate).
- *   Still at tick rate: HUD, particles, crowd, animated scenery, pose values
+ *   Still at tick rate: HUD (see below), particles, crowd, animated scenery, pose values
  *   derived by the render (+0x4DF0.., they follow the interpolated pose).
  *   XBOX_FPS_INTERP=0      duplicates (no interpolation)
  *   XBOX_FPS_INTERP_LOG=N[@t]  N race renders logged ([INTERP]) from race tick t
@@ -38,6 +38,11 @@
  *   XBOX_FPS_CAP_STALL=s:ms    (test) one simulated stall of ms in a normal render at s seconds
  *   XBOX_FPS_INTERP_CLOCK=0    (comparison) old alpha clock: time the tick was consumed
  *   XBOX_FPS_INTERP_JANK=n:ms  (test) a render slowed by ms every n race renders
+ *   XBOX_FPS_SMOOTH_LEGS=1     legs and board (bones 14-20) shown as the average of the
+ *                              last 4 ticks relative to the root while riding on the ground
+ *                              (display only, off by default; also at 60 fps: then only the
+ *                              render and tick hooks are installed). Launcher: ADVANCED >
+ *                              EXPERIMENTAL "Smoother legs in turns" ([Advanced] SmoothLegs)
  *   XBOX_FPS_INTERP_TRACE=file (test) per render: time, tick, alpha, camera / rider 0 positions
  *
  * Pacing: the average render duration is measured over normal renders
@@ -58,6 +63,14 @@
  * Fidelity: RNG A/B states saved and restored around each extra render (the
  * render draws from RNG A during the intro fly-over); allow list of renders
  * (race 0xAB610, menus 0x7CBD0); none during the frame skip [state+0x6C].
+ * HUD (XBOX_FIX_HUD_RATE=1, default): the overlay panels' draws step their
+ * animations on every call (selected item pulse, banner fade, marker sway);
+ * an extra race render starts from the HUD state copied before the normal
+ * render and the state after it is written back, so the HUD advances once
+ * per tick as at 60; no extra render while the gameplay tick is frozen
+ * (pause). XBOX_FIX_HUD_RATE=0: previous behavior. With
+ * XBOX_FPS_CAP_CHECK=1 the probe also lists the HUD regions changed by the
+ * extra renders.
  *
  * Rules:
  *   - a due tick always goes first (wait on the event with a timeout, poll

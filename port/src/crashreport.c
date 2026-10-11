@@ -35,6 +35,7 @@
  */
 #include "crashreport.h"
 #include "launcher.h"
+#include "settings.h"
 #include "version.h"
 
 #include <windows.h>
@@ -95,10 +96,25 @@ static CRITICAL_SECTION s_ring_lock;
 /* Gathered at the game's start (no allocation at crash time). */
 static char   s_settings[24 * 1024];
 static char   s_system[2048];
-static char   s_user[4][MAX_PATH]; /* user name (ANSI, UTF-8), profile folder, game folder:
-                                    * blanked in the minidump; the name also in the texts */
-static int    s_user_len[4];
+static char   s_user[2][MAX_PATH]; /* user name (ANSI, UTF-8): blanked in the texts */
+static int    s_user_len[2];
+static wchar_t s_root[MAX_PATH];   /* the install root (launcher_install_root_w): CrashReports\ */
 static ULONGLONG s_start_ms;
+
+/* Blanked in the minidumps (scrub_dump): the user name and the player's
+ * folders, each kept in UTF-16 (lower and upper case, for a simple
+ * case-insensitive match of any letter, accented or not) and as 8-bit text
+ * (UTF-8 and the ANSI code page, both cases). Filled by the main thread
+ * only; a count is raised after its entry is complete. */
+#define SCRUB_CHARS 512
+#define SCRUB_WIDE  24      /* 3 forms of 6 folders, 3 folder names, the user name */
+#define SCRUB_BYTES (2 * SCRUB_WIDE)
+#define SCRUB_SUFFIX_MIN 4  /* "\bin": the shortest end of a folder blanked on its own */
+typedef struct { WCHAR lo[SCRUB_CHARS], up[SCRUB_CHARS]; int len, dump_only; } ScrubWide;
+typedef struct { char lo[SCRUB_CHARS * 3], up[SCRUB_CHARS * 3]; int len, dump_only; } ScrubBytes;
+static ScrubWide  s_scrub_w[SCRUB_WIDE];
+static ScrubBytes s_scrub_b[SCRUB_BYTES];
+static volatile LONG s_scrub_nw, s_scrub_nb;
 
 /* Scratch for the report (only one report is written at a time). */
 static char   s_text[24 * 1024];
@@ -122,6 +138,7 @@ static int env_int(const char *name, int dflt)
 }
 
 static int lower(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+static int upper(int c) { return (c >= 'a' && c <= 'z') ? c - 32 : c; }
 
 static int is_path_end(char c)
 {
@@ -129,8 +146,108 @@ static int is_path_end(char c)
         || c == '<' || c == '>' || c == '|' || c == '*' || c == '?' || c == ',' || c == ';';
 }
 
+/* Paths the player chose, whose files keep no name in the texts (anonymize):
+ * the save and HD pack folders, and the disc image itself, as 8-bit text
+ * (UTF-8 and ANSI). Filled by the main thread before the game starts; a
+ * count is raised after its entry is complete. */
+#define PRIVATE_PATHS 12
+typedef struct { char s[MAX_PATH * 3]; int len, disc; } PrivatePath;
+static PrivatePath s_private[PRIVATE_PATHS];
+static volatile LONG s_nprivate;
+
+static void private_path_add(const WCHAR *w, int disc)
+{
+    static const UINT cps[2] = { CP_UTF8, CP_ACP };
+    int c, k, n;
+    for (c = 0; c < 2 && s_nprivate < PRIVATE_PATHS; c++) {
+        PrivatePath *e = &s_private[s_nprivate];
+        n = WideCharToMultiByte(cps[c], 0, w, -1, e->s, (int)sizeof e->s, NULL, NULL) - 1;
+        while (n > 0 && (e->s[n - 1] == '\\' || e->s[n - 1] == '/')) n--;
+        if (n < 3) continue;
+        for (k = 0; k < s_nprivate; k++)
+            if (s_private[k].len == n && s_private[k].disc == disc && !memcmp(s_private[k].s, e->s, (size_t)n)) break;
+        if (k < s_nprivate) continue;
+        e->len = n;
+        e->disc = disc;
+        MemoryBarrier();
+        InterlockedIncrement(&s_nprivate);
+    }
+}
+
+static int path_char_eq(int a, int b)
+{
+    if (a == '/') a = '\\';
+    if (b == '/') b = '\\';
+    return lower(a) == lower(b);
+}
+
+/* A path s (n bytes, its folders dl bytes) the player named: 2 = it starts
+ * with the disc image's path, 1 = its folder is a save or HD pack folder or
+ * under one, 0 = neither (a file of the game: its name is kept). */
+static int private_file(const char *s, size_t dl, size_t n)
+{
+    int count = (int)s_nprivate, k, found = 0;
+    MemoryBarrier();
+    for (k = 0; k < count; k++) {
+        const PrivatePath *e = &s_private[k];
+        size_t L = (size_t)e->len, j;
+        if (L > (e->disc ? n : dl)) continue;
+        for (j = 0; j < L && path_char_eq((unsigned char)s[j], (unsigned char)e->s[j]); j++) ;
+        if (j < L) continue;
+        if (e->disc) return 2;
+        if (L == dl || s[L] == '\\' || s[L] == '/') found = 1;
+    }
+    return found;
+}
+
+/* The length of the save or HD pack folder that s (n bytes) starts with when
+ * text, not a deeper path, follows it ("D:\Packs HD (ini) XBOX_..."), or 0:
+ * the folder alone is hidden, the rest of the line kept. */
+static size_t private_folder_at(const char *s, size_t n)
+{
+    int count = (int)s_nprivate, k;
+    size_t best = 0;
+    MemoryBarrier();
+    for (k = 0; k < count; k++) {
+        const PrivatePath *e = &s_private[k];
+        size_t L = (size_t)e->len, j;
+        int c;
+        if (e->disc || L > n || L <= best) continue;
+        for (j = 0; j < L && path_char_eq((unsigned char)s[j], (unsigned char)e->s[j]); j++) ;
+        if (j < L) continue;
+        c = L < n ? lower((unsigned char)s[L]) : ' ';
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c >= 0x80
+            || c == '\\' || c == '/' || c == '.' || c == '_' || c == '-') continue;
+        best = L;
+    }
+    return best;
+}
+
+/* A file's name ("SSX.iso", "music.inf (read)"), not a folder's: a dot, not
+ * the first character, then 1 to 5 ASCII letters or digits (a letter at
+ * least) that end the name or a word. Not: "v1.2 Saves", "Mr. Smith".
+ * Returns the offset of the last such dot (the extension), 0 if none. */
+static size_t file_ext(const char *s, size_t n)
+{
+    size_t d, k, ext = 0;
+    for (d = 1; d < n; d++) {
+        int letter = 0;
+        if (s[d] != '.') continue;
+        for (k = d + 1; k < n; k++) {
+            int c = lower((unsigned char)s[k]);
+            if (c >= 'a' && c <= 'z') letter = 1;
+            else if (c < '0' || c > '9') break;
+        }
+        if (letter && k - d - 1 <= 5 && (k == n || s[k] != '_')) ext = d;
+    }
+    return ext;
+}
+
 /* Copy src into dst, removing what could identify the player: every absolute
- * path keeps only its last component ("D:\Games\x\SSX.iso" -> "<path>\SSX.iso"),
+ * path loses its folders and keeps its last component only when that is the
+ * name of a file of the game ("D:\Games\x\SSX.iso" -> "<path>\SSX.iso",
+ * "D:\Games\x" -> "<path>"); a file the player named keeps its extension
+ * and what follows ("<path>\<disc image>.iso (ISO)", "<path>\<file>.dat");
  * then every occurrence of the user name is blanked with '*'. Returns the
  * length written. */
 static size_t anonymize(const char *src, size_t n, char *dst, size_t cap)
@@ -150,11 +267,33 @@ static size_t anonymize(const char *src, size_t n, char *dst, size_t cap)
                 if (src[end] == '\\' || src[end] == '/') last = end;
                 end++;
             }
-            if (last > i + 2 || (unc && last > i + 1)) {
+            size_t pl = private_folder_at(src + i, end - i);
+            size_t ext = file_ext(src + last + 1, end - last - 1);
+            int priv = ext ? private_file(src + i, last - i, end - i) : 0;
+            if (pl) {                           /* "<path> (ini) XBOX_..." */
+                if (o + 16 >= cap) break;
+                memcpy(dst + o, "<path>", 6);
+                o += 6;
+                i += pl;
+                continue;
+            }
+            if (last > i + 2 || (unc && last > i + 1) || (end > last + 1 && (!ext || priv))) {
                 static const char tag[] = "<path>\\";
+                if (o + 32 >= cap) break;
                 memcpy(dst + o, tag, sizeof tag - 1);
-                o += sizeof tag - 1;
-                i = last + 1;
+                if (ext) {                      /* "<path>\SSX.iso" */
+                    o += sizeof tag - 1;
+                    i = last + 1;
+                    if (priv) {                 /* "<path>\<disc image>.iso" */
+                        const char *name = priv == 2 ? "<disc image>" : "<file>";
+                        memcpy(dst + o, name, strlen(name));
+                        o += strlen(name);
+                        i += ext;
+                    }
+                } else {                        /* a folder: "<path>" */
+                    o += sizeof tag - 2;
+                    i = end;
+                }
                 continue;
             }
         }
@@ -274,10 +413,155 @@ static size_t file_tail(void)
 
 /* ── Gathered at the start ───────────────────────────────────── */
 
+/* The 8-bit form of a string in code page cp, both cases. When the two cases
+ * do not have the same length there, the string as written, with its ASCII
+ * letters in either case. Same-entry duplicates (ASCII strings are the same
+ * in UTF-8 and ANSI) are dropped. */
+static void scrub_add_bytes(UINT cp, const WCHAR *orig, const ScrubWide *w)
+{
+    ScrubBytes *b;
+    int lo_n, up_n, k;
+    if (s_scrub_nb >= SCRUB_BYTES) return;
+    b = &s_scrub_b[s_scrub_nb];
+    lo_n = WideCharToMultiByte(cp, 0, w->lo, w->len, b->lo, (int)sizeof b->lo, NULL, NULL);
+    up_n = WideCharToMultiByte(cp, 0, w->up, w->len, b->up, (int)sizeof b->up, NULL, NULL);
+    if (lo_n != up_n || lo_n <= 0) {
+        lo_n = WideCharToMultiByte(cp, 0, orig, w->len, b->lo, (int)sizeof b->lo, NULL, NULL);
+        if (lo_n <= 0) return;
+        for (k = 0; k < lo_n; k++) {
+            b->up[k] = (char)upper((unsigned char)b->lo[k]);
+            b->lo[k] = (char)lower((unsigned char)b->lo[k]);
+        }
+    }
+    if (lo_n < 3) return;
+    for (k = 0; k < s_scrub_nb; k++)
+        if (s_scrub_b[k].len == lo_n && !memcmp(s_scrub_b[k].lo, b->lo, (size_t)lo_n)
+            && !memcmp(s_scrub_b[k].up, b->up, (size_t)lo_n) && s_scrub_b[k].dump_only == w->dump_only) return;
+    b->len = lo_n;
+    b->dump_only = w->dump_only;
+    MemoryBarrier();
+    InterlockedIncrement(&s_scrub_nb);
+}
+
+/* One string to blank in the minidump, n UTF-16 units (3 at least); also
+ * in the texts of the report unless dump_only. */
+static void scrub_add(const WCHAR *s, int n, int dump_only)
+{
+    ScrubWide *w;
+    int k;
+    if (n < 3 || n >= SCRUB_CHARS || s_scrub_nw >= SCRUB_WIDE) return;
+    w = &s_scrub_w[s_scrub_nw];
+    /* Simple case mapping, the same on every system (not the user's locale). */
+    if (LCMapStringW(LOCALE_INVARIANT, LCMAP_LOWERCASE, s, n, w->lo, SCRUB_CHARS) != n
+        || LCMapStringW(LOCALE_INVARIANT, LCMAP_UPPERCASE, s, n, w->up, SCRUB_CHARS) != n) {
+        memcpy(w->lo, s, (size_t)n * sizeof(WCHAR));
+        memcpy(w->up, s, (size_t)n * sizeof(WCHAR));
+    }
+    for (k = 0; k < s_scrub_nw; k++)
+        if (s_scrub_w[k].len == n && s_scrub_w[k].dump_only == dump_only
+            && !memcmp(s_scrub_w[k].lo, w->lo, (size_t)n * sizeof(WCHAR))) return;
+    w->len = n;
+    w->dump_only = dump_only;
+    scrub_add_bytes(CP_UTF8, s, w);
+    scrub_add_bytes(CP_ACP, s, w);     /* what the ...A functions return */
+    MemoryBarrier();
+    InterlockedIncrement(&s_scrub_nw);
+}
+
+/* The part of a path that every form of it contains: after the drive letter
+ * (D:\x, \\?\D:\x, \??\D:\x and \Device\HarddiskVolume3\x all hold \x), or
+ * from the server name of a share (\\server\share, \\?\UNC\server\share,
+ * \Device\Mup\server\share). */
+static const WCHAR *path_tail(const WCHAR *p)
+{
+    if ((p[0] == L'\\' && (p[1] == L'\\' || p[1] == L'?') && p[2] == L'?' && p[3] == L'\\')) {
+        p += 4;
+        if (!_wcsnicmp(p, L"UNC\\", 4)) return p + 3;
+    } else if (p[0] == L'\\' && p[1] == L'\\') {
+        return p + 1;
+    }
+    if (p[0] && p[1] == L':') return p + 2;
+    return p;
+}
+
+/* A folder of the player: its tail (above), as given, in its 8.3 form
+ * ("PROGRA~1", on volumes that keep short names) and as Windows resolves it
+ * (8.3 names expanded, subst drives and links followed). */
+static void scrub_add_folder(const WCHAR *path)
+{
+    WCHAR fin[SCRUB_CHARS];
+    const WCHAR *t;
+    HANDLE h;
+    int n;
+    if (!path || !path[0]) return;
+    t = path_tail(path);
+    n = (int)wcslen(t);
+    while (n > 0 && t[n - 1] == L'\\') n--;
+    scrub_add(t, n, 0);
+    n = (int)GetShortPathNameW(path, fin, SCRUB_CHARS);
+    if (n > 0 && n < SCRUB_CHARS) {
+        t = path_tail(fin);
+        n = (int)wcslen(t);
+        while (n > 0 && t[n - 1] == L'\\') n--;
+        scrub_add(t, n, 0);
+    }
+    h = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    n = (int)GetFinalPathNameByHandleW(h, fin, SCRUB_CHARS, FILE_NAME_NORMALIZED | VOLUME_NAME_NONE);
+    CloseHandle(h);
+    if (n > 0 && n < SCRUB_CHARS) {
+        while (n > 0 && fin[n - 1] == L'\\') n--;
+        scrub_add(fin, n, 0);
+    }
+}
+
+/* The last name of a folder the player chose, alone (5 characters or more):
+ * a thread's stack can hold it without its path (seen: the HD pack folder's
+ * name in UTF-16, from a folder listing). In the minidumps only: in the
+ * texts, a word of the game could match it. */
+static void scrub_add_leaf(const WCHAR *path)
+{
+    const WCHAR *leaf;
+    int n;
+    if (!path || !path[0]) return;
+    n = (int)wcslen(path);
+    while (n > 0 && (path[n - 1] == L'\\' || path[n - 1] == L'/')) n--;
+    for (leaf = path + n; leaf > path && leaf[-1] != L'\\' && leaf[-1] != L'/' && leaf[-1] != L':'; leaf--) ;
+    if (path + n - leaf >= 5) scrub_add(leaf, (int)(path + n - leaf), 1);
+}
+
+void crashreport_private_folder(const char *utf8)
+{
+    WCHAR w[SCRUB_CHARS];
+    if (!s_on || !utf8 || !utf8[0]) return;
+    if (MultiByteToWideChar(CP_UTF8, 0, utf8, -1, w, SCRUB_CHARS) > 0) {
+        scrub_add_folder(w);
+        scrub_add_leaf(w);
+        private_path_add(w, 0);     /* its files' names: hidden in the texts */
+    }
+}
+
+void crashreport_private_file_acp(const char *path)
+{
+    WCHAR w[SCRUB_CHARS], full[SCRUB_CHARS], *slash;
+    DWORD n;
+    if (!s_on || !path || !path[0]) return;
+    if (MultiByteToWideChar(CP_ACP, 0, path, -1, w, SCRUB_CHARS) <= 0) return;
+    private_path_add(w, 1);         /* the disc image's name: hidden in the texts */
+    n = GetFullPathNameW(w, SCRUB_CHARS, full, NULL);           /* a relative name too */
+    if (n == 0 || n >= SCRUB_CHARS) return;
+    if ((slash = wcsrchr(full, L'\\')) == NULL) return;
+    *slash = 0;
+    scrub_add_folder(full);
+    scrub_add_leaf(full);
+}
+
 static void gather_user(void)
 {
     WCHAR wn[128];
     DWORD n = 128;
+    int wl = 0;
     char an[128];
     DWORD na = sizeof an;
     if (GetUserNameA(an, &na) && na > 1) {
@@ -287,18 +571,23 @@ static void gather_user(void)
     if (GetUserNameW(wn, &n) && n > 1) {
         int k = WideCharToMultiByte(CP_UTF8, 0, wn, (int)(n - 1), s_user[1], sizeof s_user[1] - 1, NULL, NULL);
         if (k > 0) s_user_len[1] = k;
+        wl = (int)(n - 1);
     }
-    /* The profile folder and the game's folder, as whole strings: the dump
-     * can hold them (seen: the save and game folders), so they go first. */
+    /* For the minidump: the game's folder, the install root (the game's
+     * folder or the parent of its bin\) and the profile folder (the dump
+     * can hold them, seen: the game's folder as \Device\HarddiskVolumeN\...
+     * on a thread's stack), then the user name. */
     {
-        DWORD k = GetEnvironmentVariableA("USERPROFILE", s_user[2], MAX_PATH);
-        char *slash;
-        if (k > 0 && k < MAX_PATH) s_user_len[2] = (int)k;
-        k = GetModuleFileNameA(NULL, s_user[3], MAX_PATH);
-        if (k > 0 && k < MAX_PATH && (slash = strrchr(s_user[3], '\\')) != NULL) {
+        WCHAR p[SCRUB_CHARS], *slash;
+        DWORD k = GetModuleFileNameW(NULL, p, SCRUB_CHARS);
+        if (k > 0 && k < SCRUB_CHARS && (slash = wcsrchr(p, L'\\')) != NULL) {
             *slash = 0;
-            s_user_len[3] = (int)strlen(s_user[3]);
+            scrub_add_folder(p);
         }
+        scrub_add_folder(s_root);
+        k = GetEnvironmentVariableW(L"USERPROFILE", p, SCRUB_CHARS);
+        if (k > 0 && k < SCRUB_CHARS) scrub_add_folder(p);
+        scrub_add(wn, wl, 0);
     }
 }
 
@@ -353,7 +642,101 @@ static void gather_system(void)
     }
 }
 
-/* settings.ini (launcher.h) and the XBOX_* variables, anonymized. */
+static int is_absolute_path(const char *v, size_t n)
+{
+    return (n >= 3 && (v[0] | 32) >= 'a' && (v[0] | 32) <= 'z' && v[1] == ':' && (v[2] == '\\' || v[2] == '/'))
+        || (n >= 2 && (v[0] == '\\' || v[0] == '/') && v[1] == v[0]);
+}
+
+/* What a path value is, without any of its names, for settings.txt:
+ * "<absolute path: folder found>", "<relative path: not found>"... A relative
+ * one is looked up from base (the install root, as the launcher does). A
+ * network path is not looked up (a share that does not answer would hold
+ * the game's start). */
+static size_t describe_path(const char *v, size_t n, UINT cp, const WCHAR *base, char *dst, size_t cap)
+{
+    WCHAR w[MAX_PATH], full[2 * MAX_PATH + 2];
+    const char *what = "not checked";
+    int net = n >= 2 && (v[0] == '\\' || v[0] == '/') && v[1] == v[0];
+    int abs = net || (n >= 2 && v[1] == ':');      /* as launcher_resolve_path reads it */
+    int len, k;
+    if (!net) {
+        what = "not found";
+        k = MultiByteToWideChar(cp, cp == CP_UTF8 ? MB_ERR_INVALID_CHARS : 0, v, (int)n, w, MAX_PATH - 1);
+        if (k <= 0 && cp == CP_UTF8) k = MultiByteToWideChar(CP_ACP, 0, v, (int)n, w, MAX_PATH - 1);
+        if (k > 0) {
+            const WCHAR *look = w;
+            DWORD attr;
+            DWORD old_mode = 0;
+            w[k] = 0;
+            if (!abs && base && base[0]) {
+                _snwprintf(full, sizeof full / sizeof full[0], L"%ls\\%ls", base, w);
+                full[sizeof full / sizeof full[0] - 1] = 0;
+                look = full;
+            }
+            SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &old_mode);  /* no "insert a disk" box */
+            attr = GetFileAttributesW(look);
+            SetThreadErrorMode(old_mode, NULL);
+            if (attr != INVALID_FILE_ATTRIBUTES)
+                what = (attr & FILE_ATTRIBUTE_DIRECTORY) ? "folder found" : "file found";
+        }
+    }
+    len = snprintf(dst, cap, "<%s path: %s>", net ? "network" : abs ? "absolute" : "relative", what);
+    if (len < 0) return 0;
+    return (size_t)len < cap ? (size_t)len : cap - 1;
+}
+
+/* settings.ini text (or one XBOX_* variable), line by line: the value of a
+ * path setting (settings.h SETTING_PATH) or any value that is an absolute
+ * path becomes what it is (describe_path), never its folders' or file's
+ * names; every other line is anonymized. Strings in code page cp. */
+static size_t settings_lines(const char *src, size_t n, UINT cp, char *dst, size_t cap)
+{
+    char section[64] = "", key[64];
+    size_t i = 0, o = 0;
+    if (n >= 3 && !memcmp(src, "\xEF\xBB\xBF", 3)) i = 3;     /* UTF-8 byte order mark */
+    while (i < n && o + 80 < cap) {
+        size_t le = i, next, a = i, ve;
+        const char *eq;
+        while (le < n && src[le] != '\n') le++;
+        next = le < n ? le + 1 : le;
+        while (a < le && (src[a] == ' ' || src[a] == '\t')) a++;
+        if (a < le && src[a] == '[') {
+            size_t b = a + 1, kl = 0;
+            while (b < le && src[b] != ']' && kl + 1 < sizeof section) section[kl++] = src[b++];
+            section[kl] = 0;
+        } else if (a < le && src[a] != ';' && src[a] != '#'
+                   && (eq = memchr(src + a, '=', le - a)) != NULL) {
+            size_t vs = (size_t)(eq - src) + 1, kl = (size_t)(eq - src) - a;
+            int id;
+            while (kl && (src[a + kl - 1] == ' ' || src[a + kl - 1] == '\t')) kl--;
+            if (kl >= sizeof key) kl = sizeof key - 1;
+            memcpy(key, src + a, kl);
+            key[kl] = 0;
+            while (vs < le && (src[vs] == ' ' || src[vs] == '\t')) vs++;
+            ve = le;
+            while (ve > vs && (src[ve - 1] == ' ' || src[ve - 1] == '\t' || src[ve - 1] == '\r')) ve--;
+            id = settings_find(section, key);
+            if (ve > vs && ((id >= 0 && settings_def(id)->type == SETTING_PATH) || is_absolute_path(src + vs, ve - vs))
+                && o + (vs - i) + 64 + (next - ve) < cap) {
+                memcpy(dst + o, src + i, vs - i);                  /* "Key=" */
+                o += vs - i;
+                o += describe_path(src + vs, ve - vs, cp, s_root, dst + o, cap - o);
+                memcpy(dst + o, src + ve, next - ve);              /* the line's end */
+                o += next - ve;
+                dst[o] = 0;
+                i = next;
+                continue;
+            }
+        }
+        o += anonymize(src + i, next - i, dst + o, cap - o);
+        i = next;
+    }
+    return o;
+}
+
+/* settings.ini (launcher.h) and the XBOX_* variables, without the player's
+ * paths (settings_lines). */
 static void gather_settings(void)
 {
     char ini[MAX_PATH];
@@ -370,7 +753,7 @@ static void gather_settings(void)
             DWORD got = 0;
             ReadFile(h, s_raw, 12 * 1024, &got, NULL);
             CloseHandle(h);
-            len += anonymize(s_raw, got, s_settings + len, sizeof s_settings - len - 1024);
+            len += settings_lines(s_raw, got, CP_UTF8, s_settings + len, sizeof s_settings - len - 1024);
         } else {
             len += (size_t)snprintf(s_settings + len, sizeof s_settings - len, "(no settings.ini)\n");
         }
@@ -382,7 +765,7 @@ static void gather_settings(void)
         for (e = env; *e; e += strlen(e) + 1) {
             size_t el = strlen(e);
             if (_strnicmp(e, "XBOX_", 5) || len + el + 16 >= sizeof s_settings) continue;
-            len += anonymize(e, el, s_settings + len, sizeof s_settings - len - 2);
+            len += settings_lines(e, el, CP_ACP, s_settings + len, sizeof s_settings - len - 2);
             s_settings[len++] = '\n';
             s_settings[len] = 0;
         }
@@ -405,20 +788,18 @@ static BOOL make_dir_chain(wchar_t *path)
     return CreateDirectoryW(path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
 }
 
-/* <exe dir>\CrashReports\<date>-<kind>, else under %LOCALAPPDATA%. */
+/* <install root>\CrashReports\<date>-<kind> (where the launcher looks), else
+ * under %LOCALAPPDATA%. */
 static BOOL make_report_dir(const wchar_t *kind)
 {
-    wchar_t base[MAX_PATH], *slash;
     SYSTEMTIME t;
-    DWORD k = GetModuleFileNameW(NULL, base, MAX_PATH);
     int attempt;
     GetLocalTime(&t);
     for (attempt = 0; attempt < 2; attempt++) {
         if (attempt == 0) {
-            if (k == 0 || k >= MAX_PATH || !(slash = wcsrchr(base, L'\\'))) continue;
-            *slash = 0;
+            if (!s_root[0]) continue;
             _snwprintf(s_dir, MAX_PATH, L"%ls\\CrashReports\\%04u-%02u-%02u_%02u-%02u-%02u_%ls",
-                       base, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, kind);
+                       s_root, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, kind);
         } else {
             wchar_t la[MAX_PATH];
             DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", la, MAX_PATH);
@@ -436,39 +817,91 @@ static BOOL make_report_dir(const wchar_t *kind)
     return FALSE;
 }
 
-/* Blank the game folder, the profile folder and the user name in the written
- * minidump (ANSI / UTF-8 and UTF-16 for ASCII strings). The flags above keep
- * module names without folders, but a dump of this process was seen holding
- * the game's and the save folder's paths in memory it captures. */
+/* The 8-bit strings of s_scrub_b (UTF-8 and ANSI) blanked with '*' in
+ * p[0, n), longest first, each also from any of its separators to its end
+ * (see scrub_dump). For the minidump and, with text set, the texts of the
+ * report, where a match must also end a name ("\bin" leaves "\bink.dll"). */
+static void scrub_bytes(unsigned char *p, size_t n, int text)
+{
+    int nb = (int)s_scrub_nb, done[SCRUB_BYTES] = { 0 };
+    int pass, o;
+    size_t i, j, k;
+    MemoryBarrier();
+    for (pass = 0; pass < nb; pass++) {
+        const ScrubBytes *b = NULL;
+        size_t L;
+        for (o = 0; o < nb; o++)
+            if (!done[o] && (!b || s_scrub_b[o].len > b->len)) b = &s_scrub_b[o];
+        done[b - s_scrub_b] = 1;
+        if (text && b->dump_only) continue;
+        for (k = 0; k < (size_t)b->len; k++) {
+            const unsigned char *lo = (const unsigned char *)b->lo + k, *up = (const unsigned char *)b->up + k;
+            if (k && ((size_t)b->len - k < SCRUB_SUFFIX_MIN || lo[0] != '\\')) continue;
+            L = (size_t)b->len - k;
+            for (i = 0; i + L <= n; i++) {
+                for (j = 0; j < L && (p[i + j] == lo[j] || p[i + j] == up[j]); j++) ;
+                if (j == L && text && i + L < n) {
+                    int c = lower(p[i + L]);
+                    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') j = 0;
+                }
+                if (j == L) {
+                    memset(p + i, '*', L);
+                    i += L - 1;
+                }
+            }
+        }
+    }
+}
+
+/* Blank the player's folders and user name (s_scrub_w / s_scrub_b) in the
+ * written minidump, at any byte offset. The flags above keep module names
+ * without folders, but a dump of this process was seen holding the game's
+ * and the save folder's paths in memory it captures (the game's folder as
+ * \Device\HarddiskVolumeN\..., on a thread's stack). Longest strings first, so
+ * that a folder holding the user name is blanked whole. A path can also stay
+ * as a fragment, its start overwritten by a later, shorter string (seen:
+ * "...ojects\OpenTricky\...\bin" on a stack): each folder is also blanked
+ * from any of its separators to its end ("\x\y\z", "\y\z", "\z"). */
 static void scrub_dump(const wchar_t *path)
 {
     HANDLE f = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
     HANDLE map;
     unsigned char *p;
     LARGE_INTEGER sz;
-    size_t n, i, j;
+    size_t n, i, j, k;
     if (f == INVALID_HANDLE_VALUE) return;
     if (!GetFileSizeEx(f, &sz) || sz.QuadPart == 0 || sz.QuadPart > (256LL << 20)) { CloseHandle(f); return; }
     map = CreateFileMappingW(f, NULL, PAGE_READWRITE, 0, 0, NULL);
     p = map ? (unsigned char *)MapViewOfFile(map, FILE_MAP_WRITE, 0, 0, 0) : NULL;
     n = (size_t)sz.QuadPart;
     if (p) {
-        static const int order[4] = { 3, 2, 0, 1 };   /* longest strings first */
-        size_t o;
-        for (o = 0; o < 4; o++) {
-            size_t L = (size_t)s_user_len[order[o]];
-            const char *s_pat = s_user[order[o]];
-            if (L < 3) continue;
-            for (i = 0; i + 2 * L <= n; i++) {
-                /* UTF-16LE (ASCII names) */
-                for (j = 0; j < L && p[i + 2 * j + 1] == 0
-                     && lower(p[i + 2 * j]) == lower((unsigned char)s_pat[j]); j++) ;
-                if (j == L) { for (j = 0; j < L; j++) p[i + 2 * j] = '*'; continue; }
-                /* 8-bit */
-                for (j = 0; j < L && lower(p[i + j]) == lower((unsigned char)s_pat[j]); j++) ;
-                if (j == L) for (j = 0; j < L; j++) p[i + j] = '*';
+        int nw = (int)s_scrub_nw, done[SCRUB_WIDE] = { 0 };
+        int pass, o;
+        MemoryBarrier();
+        /* UTF-16LE, then 8-bit: each time the longest string left. */
+        for (pass = 0; pass < nw; pass++) {
+            const ScrubWide *w = NULL;
+            size_t L;
+            for (o = 0; o < nw; o++)
+                if (!done[o] && (!w || s_scrub_w[o].len > w->len)) w = &s_scrub_w[o];
+            done[w - s_scrub_w] = 1;
+            for (k = 0; k < (size_t)w->len; k++) {
+                const WCHAR *lo = w->lo + k, *up = w->up + k;
+                if (k && ((size_t)w->len - k < SCRUB_SUFFIX_MIN || lo[0] != L'\\')) continue;       /* the whole string, then each "\..." end */
+                L = (size_t)w->len - k;
+                for (i = 0; i + 2 * L <= n; i++) {
+                    for (j = 0; j < L; j++) {
+                        WCHAR c = (WCHAR)(p[i + 2 * j] | (p[i + 2 * j + 1] << 8));
+                        if (c != lo[j] && c != up[j]) break;
+                    }
+                    if (j == L) {
+                        for (j = 0; j < L; j++) { p[i + 2 * j] = '*'; p[i + 2 * j + 1] = 0; }
+                        i += 2 * L - 1;
+                    }
+                }
             }
         }
+        scrub_bytes(p, n, 0);
         UnmapViewOfFile(p);
     }
     if (map) CloseHandle(map);
@@ -518,6 +951,7 @@ static void write_common_files(void)
             if (start < n) start++;
         }
         m = anonymize(s_raw + start, n - start, s_clean, sizeof s_clean);
+        scrub_bytes((unsigned char *)s_clean, m, 1);   /* the player's folders in any other form */
         write_file(s_dir, L"log.txt", s_clean, m);
     } else {
         static const char none[] =
@@ -525,6 +959,7 @@ static void write_common_files(void)
             "or the capture is off.\n";
         write_file(s_dir, L"log.txt", none, sizeof none - 1);
     }
+    scrub_bytes((unsigned char *)s_settings, strlen(s_settings), 1);
     write_file(s_dir, L"settings.txt", s_settings, strlen(s_settings));
 }
 
@@ -804,6 +1239,7 @@ void crashreport_install(void)
     /* From System32 only (no DLL planted beside the game). */
     dbg = LoadLibraryExW(L"dbghelp.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (dbg) s_mdwd = (MiniDumpWriteDumpFn)(void *)GetProcAddress(dbg, "MiniDumpWriteDump");
+    launcher_install_root_w(s_root, MAX_PATH);    /* found once here: no file call at crash time */
     gather_user();
     s_crash_event = CreateEventW(NULL, FALSE, FALSE, NULL);
     s_done_event  = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -843,11 +1279,26 @@ void crashreport_set_output(int player, const char *log_path, int output_redirec
     _close(fd);                              /* the two duplicates stay open */
 }
 
+/* The HD pack folder, as the launcher hands it to the game (XBOX_HD_TEXTURES
+ * = its absolute path, or "0"): blanked in the minidumps, its files' names
+ * hidden in the texts. */
+static void gather_hd_pack(void)
+{
+    const char *hd = getenv("XBOX_HD_TEXTURES");
+    WCHAR w[SCRUB_CHARS];
+    if (hd && is_absolute_path(hd, strlen(hd)) && MultiByteToWideChar(CP_ACP, 0, hd, -1, w, SCRUB_CHARS) > 0) {
+        scrub_add_folder(w);
+        scrub_add_leaf(w);
+        private_path_add(w, 0);
+    }
+}
+
 void crashreport_game_start(void)
 {
     const char *test;
     if (!s_on) return;
     gather_system();
+    gather_hd_pack();
     gather_settings();
     s_start_ms = now_ms();
     InterlockedExchange(&s_game_started, 1);

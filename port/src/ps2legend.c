@@ -36,10 +36,35 @@
  *   Pro: while it draws in Pro, those two index entries point at "combat cam"
  *   and "grab board" (kLD_DC_XBOX_buttonBLACK) and are put back on return.
  *
+ * The replay's help ("Show Help" in a replay) names the Back button "BACK"
+ * beside its glyph ("BACK-Change Camera"; START-Exit beside it). The PS2
+ * release, whose Select sits in that place, says "SELECT". The word is the
+ * string at 0x199E9C, not a language file string, and the same bytes name the
+ * Back button in the game's button-name table (0x1BA378, read when the
+ * controller maps are set up), so it cannot change for good: while the
+ * replay overlay draws in the PS2 layout (0x0EC800, the only caller of the
+ * two help panels 0x0EB8F0 / 0x0EBEF0, which draw the word at once), its 8
+ * bytes ("BACK" and its padding, START follows) read "SELECT" and are put
+ * back on return. Same size in memory, so nothing moves. The word stays
+ * centred on the same point, but at the Xbox's size "SELECT" runs into the
+ * D-pad picture and into "START" (closer together than on the PS2): that one
+ * draw (0x0C3020 with this string, during the overlay only) is made at
+ * REPLAY_SELECT_SHRINK times its scale. The Advanced Replay help's labels
+ * "BACK-Change Camera" / "START-Exit" (language file) read "Change Camera" /
+ * "Exit", the PS2 release's labels there (it has no other). The debug Xbox
+ * layout keeps the Xbox words.
+ *
  * The "Basic Controls" picture shown while the game boots (a splash screen,
  * SplashScreen_DrawTexture 0x136270) draws the Xbox pad; it is always
  * skipped, the way the game itself skips it when the picture is missing
  * ([this+0x414] < 0): the screen stays black for that second.
+ *
+ * The training's loading screen (RulesScreen, vtable 0x1A7A24, built when
+ * the game mode is 6 = lesson or, on a reload, when the track is 10 =
+ * "trick") draws the same Xbox pad (+0x1C, 0x138700) and its kLD_* legend
+ * (+0x20, 0x1387B0). Both draw nothing (XBOX_FIX_HIDE_LOAD_LEGEND, default 1;
+ * 0 = the pad and its legend): "loading..." stays on a black screen for the
+ * same load. Neither function is used anywhere else.
  *
  * PC platform layer (the console's own screens and words, for every layout):
  * - The console's words in the language file (XBOX_FIX_PC_TEXT, default 1;
@@ -104,6 +129,10 @@ static const LocEdit k_edits[] = {
     { 0xE04, EDIT_LEGEND, "" },            /* kLD_PRO_la_ud1:           "+modifier=late spins" */
     { 0xE08, EDIT_LEGEND, "grab board" },  /* kLD_DC_XBOX_buttonBLACK:  "modifier" */
     /* kLD_PRO_XBOX_buttonBLACK "combat cam" is kept: it labels Y in Pro. */
+    /* The Advanced Replay help: the PS2 labels, which name no button (the
+     * words above the two glyphs do: see hook_replayhelp_000EC800) */
+    { 0x1A8, EDIT_LEGEND, "Change Camera" },  /* replay help: "BACK-Change Camera" */
+    { 0x1A9, EDIT_LEGEND, "Exit" },           /* replay help: "START-Exit" */
     { 0xDEE, EDIT_PC,     "quit game" },   /* kOVExitToDashBoard:       "exit to dashboard" */
     /* Configure Controller in the drawn button styles (all three): the PS2
      * game's words where its legend differs (see k_cfg_layout); the original
@@ -319,6 +348,7 @@ static int s_pctext;    /* XBOX_FIX_PC_TEXT */
 static int s_hddskip;   /* XBOX_FIX_SKIP_HDD_CHECK */
 static int s_quit;      /* XBOX_FIX_QUIT_GAME */
 static int s_hidemu;    /* XBOX_FIX_HIDE_MU */
+static int s_hidelegend; /* XBOX_FIX_HIDE_LOAD_LEGEND */
 
 static int s_cfg;       /* btnicons_cfg_style(): the style's Configure Controller layout */
 
@@ -453,9 +483,71 @@ static void hook_legend_001387B0(void)
     }
 }
 
+/* The replay overlay's draw (called through a vtable only, so the lookup is
+ * enough): the help's "BACK" reads "SELECT" while it runs. */
+void sub_000EC800(void);
+
+#define REPLAY_BACK_WORD 0x199E9Cu   /* "BACK\0\0\0\0", then "START" at 0x199EA4 */
+#define REPLAY_SELECT_SHRINK 0.72f   /* "SELECT" clear of the D-pad and of "START" */
+
+static int s_replay_select;      /* the overlay is drawing, "SELECT" in place */
+
+/* Text draw (thiscall: scale, x, y, string as floats and a pointer; ret 16),
+ * reached by direct calls: fix_manual_hook_calls routes them here. Only the
+ * replay help's "SELECT", while the overlay draws, is changed: its scale. */
+void sub_000C3020(void);
+void hook_text_000C3020(void);
+void hook_text_000C3020(void)
+{
+    if (s_replay_select && MEM32(g_esp + 16u) == REPLAY_BACK_WORD) {
+        uint32_t u = MEM32(g_esp + 4u);
+        float k;
+        memcpy(&k, &u, 4);
+        if (k > 0.0f && k < 4.0f) {
+            k *= REPLAY_SELECT_SHRINK;
+            memcpy(&u, &k, 4);
+            MEM32(g_esp + 4u) = u;
+        }
+    }
+    sub_000C3020();
+}
+
+static void hook_replayhelp_000EC800(void)
+{
+    static const char k_back[8] = "BACK", k_select[8] = "SELECT";
+    uint32_t w0 = MEM32(REPLAY_BACK_WORD), w1 = MEM32(REPLAY_BACK_WORD + 4u), s0, s1;
+    int swap = memcmp(&w0, k_back, 4) == 0 && memcmp(&w1, k_back + 4, 4) == 0;
+
+    if (swap) {
+        memcpy(&s0, k_select, 4);
+        memcpy(&s1, k_select + 4, 4);
+        MEM32(REPLAY_BACK_WORD) = s0;
+        MEM32(REPLAY_BACK_WORD + 4u) = s1;
+        s_replay_select = 1;
+    }
+    sub_000EC800();
+    if (swap) {
+        s_replay_select = 0;
+        MEM32(REPLAY_BACK_WORD) = w0;
+        MEM32(REPLAY_BACK_WORD + 4u) = w1;
+    }
+}
+
 /* SplashScreen_DrawTexture (thiscall, no argument, plain ret): draws nothing. */
 static void hook_splash_00136270(void)
 {
+    g_esp += 4;
+}
+
+/* RulesScreen's pad (0x138700) and legend (0x1387B0) (thiscall, no
+ * argument, plain ret): draw nothing. */
+static void hook_rules_hide(void)
+{
+    static int s_logged;
+    if (!s_logged) {
+        s_logged = 1;
+        fprintf(stderr, "[PS2LEGEND] training loading screen: pad and legend hidden\n");
+    }
     g_esp += 4;
 }
 
@@ -576,18 +668,25 @@ void ps2legend_init(void)
     s_quit = !(e && e[0] == '0');
     e = getenv("XBOX_FIX_HIDE_MU");
     s_hidemu = !(e && e[0] == '0');
+    e = getenv("XBOX_FIX_HIDE_LOAD_LEGEND");
+    s_hidelegend = !(e && e[0] == '0');
     s_cfg = btnicons_cfg_style();
     if (s_on || s_pctext)
         xbox_file_add_hook(match, rewrite);
     g_hal_return_hook = on_hal_return;      /* logs each call; closes only with s_quit */
     fprintf(stderr, "[PS2LEGEND] PS2 loading legend %d, PC text %d, hard disk check wait cut %d, "
-            "quit game %d, memory units hidden %d\n", s_on, s_pctext, s_hddskip, s_quit, s_hidemu);
+            "quit game %d, memory units hidden %d, training load legend hidden %d\n",
+            s_on, s_pctext, s_hddskip, s_quit, s_hidemu, s_hidelegend);
 }
 
 void (*ps2legend_lookup(unsigned int xbox_va))(void)
 {
     if (xbox_va == 0x00136270u) return hook_splash_00136270;
+    if ((xbox_va == 0x00138700u || xbox_va == 0x001387B0u) && s_hidelegend)
+        return hook_rules_hide;
     if (xbox_va == 0x001387B0u && s_on) return hook_legend_001387B0;
+    if (xbox_va == 0x000EC800u && s_on) return hook_replayhelp_000EC800;
+    if (xbox_va == 0x000C3020u) return hook_text_000C3020;
     if (xbox_va == 0x000AF7B0u && (s_hddskip > 0 || s_quit)) return hook_hddcheck_000AF7B0;
     if (xbox_va == 0x00094260u && s_hidemu) return hook_devrow_00094260;
     return 0;

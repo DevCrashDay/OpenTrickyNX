@@ -635,6 +635,57 @@ unsigned d3d8_PresentSeq(void)
     return g_present_seq;
 }
 
+/* Video presents never wait for the GPU.
+ *
+ * While a movie plays, this thread presents it on a 16 ms timer
+ * (nv2a_live_pb.c) -- and this thread is also the one that acknowledges the
+ * title's GPU fences. The movie player waits on such a fence every frame
+ * (D3D BlockOnTime under its back-buffer LockRect), and between two frames
+ * its loop is the only reader of the game's 8-sample input ring. On the
+ * laptop's Intel UHD the driver regularly kept a present-path call (Map of
+ * the upload texture, then Present once that was gone) blocked for 350-500 ms
+ * while the GPU was still on earlier work: the fences stopped, the movie loop
+ * stopped reading input, and a START pressed in that window was lost.
+ * An event query is ended after each movie present; the next one is issued
+ * only once the GPU has passed it, so the timer present is skipped instead of
+ * blocking (the frame is shown a little later, as it would have been). */
+static ID3D11Query *s_vid_query;
+static int          s_vid_query_live;
+static unsigned     s_vid_skips;
+
+static void video_present_mark(void)
+{
+    if (!g_device_state.d3d11_device || !g_device_state.d3d11_context) return;
+    if (!s_vid_query) {
+        D3D11_QUERY_DESC qd;
+        qd.Query = D3D11_QUERY_EVENT;
+        qd.MiscFlags = 0;
+        if (FAILED(ID3D11Device_CreateQuery(g_device_state.d3d11_device, &qd, &s_vid_query)))
+            s_vid_query = NULL;
+    }
+    if (!s_vid_query) return;
+    ID3D11DeviceContext_End(g_device_state.d3d11_context, (ID3D11Asynchronous *)s_vid_query);
+    s_vid_query_live = 1;
+}
+
+int d3d8_VideoPresentReady(void)
+{
+    HRESULT hr;
+    if (!s_vid_query_live || !s_vid_query || !g_device_state.d3d11_context) return 1;
+    hr = ID3D11DeviceContext_GetData(g_device_state.d3d11_context,
+                                     (ID3D11Asynchronous *)s_vid_query, NULL, 0, 0);
+    if (hr == S_FALSE) {
+        if (++s_vid_skips == 1 || s_vid_skips % 500 == 0) {
+            fprintf(stderr, "[FB] video present held: GPU still on the previous frame (%u so far)\n",
+                    s_vid_skips);
+            fflush(stderr);
+        }
+        return 0;
+    }
+    s_vid_query_live = 0;
+    return 1;
+}
+
 void d3d8_PresentFrame(void)
 {
     /* Pump Windows messages */
@@ -2440,6 +2491,7 @@ static HRESULT host_present_impl(void)
     }
     s_split_done = 0;
     s_post_frame++;                     /* the next present is a new frame */
+    if (s_video_frame) video_present_mark();
     s_video_frame = 0;
     {   /* XBOX_FPS_LOG=1: frames per second every 2 s, for measuring */
         static int on = -1;
@@ -2478,6 +2530,11 @@ static HRESULT host_present_impl(void)
                             g_nv_compiles, g_nv_compile_ms, g_tex_uploads_log, g_tex_upload_ms);
                     g_nv_compiles = 0;
                     g_nv_compile_ms = 0;
+                    {   /* shaders read from the disk cache (none with XBOX_SHADER_CACHE=0) */
+                        extern volatile long g_nv_shc_hits;
+                        if (g_nv_shc_hits) fprintf(stderr, "[SHC] %ld shaders from the cache\n", g_nv_shc_hits);
+                        g_nv_shc_hits = 0;
+                    }
                     g_tex_uploads_log = 0;
                     g_tex_upload_ms = 0;
                     memset(hist, 0, sizeof hist);
@@ -3979,7 +4036,7 @@ void d3d8_PresentGuestFramebuffer(const void *src, unsigned pitch,
 {
     static ID3D11Texture2D *stage = NULL;
     static unsigned stage_w = 0, stage_h = 0;
-    D3D11_MAPPED_SUBRESOURCE m;
+    static unsigned char *conv = NULL;    /* the frame converted, CPU side */
     ID3D11Texture2D *back = NULL;
     unsigned y, x;
 
@@ -3996,6 +4053,8 @@ void d3d8_PresentGuestFramebuffer(const void *src, unsigned pitch,
     if (stage && (stage_w != w || stage_h != h)) {
         ID3D11Texture2D_Release(stage);
         stage = NULL;
+        free(conv);
+        conv = NULL;
     }
     if (!stage) {
         D3D11_TEXTURE2D_DESC td;
@@ -4008,22 +4067,35 @@ void d3d8_PresentGuestFramebuffer(const void *src, unsigned pitch,
          * while the map and the pixel conversion both succeeded -- which is
          * why the source reported 4032 non-black pixels and the screen stayed
          * black. STAGING is the canonical CPU-write-then-copy path. */
-        td.Usage = D3D11_USAGE_STAGING;
+        /* DEFAULT, filled with UpdateSubresource, no longer a
+         * STAGING texture mapped for writing. The map waited for the GPU to be
+         * done with the copy queued from the same texture one present
+         * earlier, and on some drivers (Intel UHD, measured) that wait
+         * sometimes lasted ~450 ms. This thread is the one that acknowledges
+         * the title's GPU fences, so the title's D3D BlockOnTime (under the
+         * video player's LockRect) stalled with it, the video loop read no
+         * input for ~0.5 s and START pressed in that window was lost (input
+         * ring of 8 samples). UpdateSubresource does not wait: the runtime
+         * stages the data when the texture is still in use. A DEFAULT
+         * texture is a legal copy source, so the copies below are unchanged. */
+        td.Usage = D3D11_USAGE_DEFAULT;
         td.BindFlags = 0;
-        td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        td.CPUAccessFlags = 0;
+        conv = (unsigned char *)malloc((size_t)w * h * 4u);
+        if (!conv) return;
         if (FAILED(ID3D11Device_CreateTexture2D(g_device_state.d3d11_device,
-                                                &td, NULL, &stage)) || !stage)
+                                                &td, NULL, &stage)) || !stage) {
+            free(conv);
+            conv = NULL;
             return;
+        }
         stage_w = w; stage_h = h;
     }
 
-    if (src && FAILED(ID3D11DeviceContext_Map(g_device_state.d3d11_context,
-            (ID3D11Resource *)stage, 0, D3D11_MAP_WRITE, 0, &m)))
-        return;
     if (src) {
     for (y = 0; y < h; y++) {
         const unsigned char *s = (const unsigned char *)src + (size_t)y * pitch;
-        unsigned char *d = (unsigned char *)m.pData + (size_t)y * m.RowPitch;
+        unsigned char *d = conv + (size_t)y * w * 4u;
         for (x = 0; x < w; x++) {
             d[x * 4 + 0] = s[x * 4 + 2];   /* R <- guest R */
             d[x * 4 + 1] = s[x * 4 + 1];   /* G */
@@ -4031,8 +4103,9 @@ void d3d8_PresentGuestFramebuffer(const void *src, unsigned pitch,
             d[x * 4 + 3] = 0xFF;           /* opaque: the video has no alpha */
         }
     }
-    ID3D11DeviceContext_Unmap(g_device_state.d3d11_context,
-                              (ID3D11Resource *)stage, 0);
+    ID3D11DeviceContext_UpdateSubresource(g_device_state.d3d11_context,
+                                          (ID3D11Resource *)stage, 0, NULL,
+                                          conv, w * 4u, 0);
     }
 
     /* Into the scene target. At the title's own size that is the

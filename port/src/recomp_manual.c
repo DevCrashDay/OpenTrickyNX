@@ -285,7 +285,7 @@ recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
 
     /* Host frame cap (XBOX_FPS_CAP != 60) -- renders without a
      * tick while the main loop waits for its frame event. At the default
-     * (60) the hook is not installed: the original path is untouched. */
+     * (60, no leg smoothing) no hook is installed: the original path is untouched. */
     if (g_fps_cap_on) {
         recomp_func_t fn = fps_cap_lookup(xbox_va);
         if (fn) return fn;

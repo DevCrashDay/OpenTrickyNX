@@ -19,6 +19,7 @@ static UINT   s_flags;                  /* chain creation flags */
 static HANDLE s_wait;                   /* latency object (flip model) */
 static HWND   s_hwnd;
 static volatile LONG s_hz;              /* refresh rate of the window's display */
+static volatile LONG s_pace_fps;        /* frame rate limit (0: none), see d3d8_sync_set_pace */
 static double s_qf;
 
 static const char *const k_mode_name[] = { "legacy", "off", "vsync", "adaptive" };
@@ -52,6 +53,11 @@ int d3d8_sync_mode(void)
         s_legacy_vsync = e && e[0] == '1';
     }
     return s_mode;
+}
+
+void d3d8_sync_set_pace(int fps)
+{
+    InterlockedExchange(&s_pace_fps, fps > 0 && fps <= 1000 ? fps : 0);
 }
 
 int d3d8_monitor_hz(HWND hwnd)
@@ -298,6 +304,15 @@ void d3d8_sync_created(IDXGISwapChain *sc, HWND hwnd)
     if (s_flip && s_wait) fprintf(stderr, "D3D8: presentation queue: %d frame(s) at most\n", s_latency);
 }
 
+/* Adaptive: an arrival gap of this length or more is a load or a stall, not
+ * a pace (no frame for more than 3 steps of the game's 60 Hz logic); the
+ * average covers
+ * about this much time at the target pace; tearing starts when the average
+ * interval is this much longer than the target (below ~91 % of its rate). */
+#define ADAPTIVE_GAP_MS   60.0
+#define ADAPTIVE_AVG_MS   500.0
+#define ADAPTIVE_SLOW     1.10
+
 HRESULT d3d8_sync_present(IDXGISwapChain *sc, double *dxgi_ms)
 {
     static double last_arrive, arrive_avg;
@@ -322,15 +337,30 @@ HRESULT d3d8_sync_present(IDXGISwapChain *sc, double *dxgi_ms)
         sync = 1;
         break;
     case D3D8_SYNC_ADAPTIVE: {
-        long hz = s_hz > 0 ? s_hz : 60;
-        double period = 1000.0 / (double)hz;
-        /* Arrival pace of the frames (running average over ~8, from the
-         * arrival at Present, without our wait): below the refresh rate, a
-         * late frame is shown at once (tearing) rather than at the next
-         * refresh. Above it, VSync. */
+        long hz = s_hz > 0 ? s_hz : 60, cap = s_pace_fps;
+        /* Target pace: one frame per refresh, or one per frame of the frame
+         * rate limit when it is below the display (a 60 fps limit on a
+         * 240 Hz display shows each frame for 4 refreshes: on time). */
+        double period = 1000.0 / (double)(cap > 0 && cap < hz ? cap : hz);
+        /* Arrival interval of this frame, at Present, without our wait. */
         double d = last_arrive > 0 ? t0 - last_arrive : period;
-        arrive_avg = arrive_avg > 0 ? arrive_avg * 0.875 + d * 0.125 : d;
-        if (arrive_avg > 1.05 * period && d > period) {
+        if (arrive_avg <= 0) arrive_avg = period;
+        if (d >= ADAPTIVE_GAP_MS) {
+            /* A load or a stall is not a pace: VSync for this frame, and the
+             * average starts again from the target, so that the uneven
+             * frames right after it (race start after the tips screen) are
+             * not taken for a slow game. */
+            arrive_avg = period;
+            sync = 1;
+            break;
+        }
+        /* Running average of the arrival interval over ~0.5 s of frames at
+         * the target pace (weight period / 0.5 s per frame): a short burst
+         * of uneven frames barely moves it. A late frame is shown at once
+         * (tearing) only while the game stays more than 10 % slower than
+         * the target pace; otherwise VSync. */
+        arrive_avg += (d - arrive_avg) * (period / ADAPTIVE_AVG_MS);
+        if (arrive_avg > ADAPTIVE_SLOW * period && d > period) {
             sync = 0;
             flags = s_tearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
             M.tears++;

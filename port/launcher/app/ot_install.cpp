@@ -2,8 +2,11 @@
  * ot_install.cpp -- see ot_install.h.
  */
 #include "ot_install.h"
+#include "ot_sign.h"
 #include "ot_update.h"
 #include "ot_util.h"
+
+#include "miniz.h"
 
 #include <SDL3/SDL.h>
 
@@ -78,196 +81,6 @@ struct Sha256 {
         char out[65];
         for (int i = 0; i < 8; i++) snprintf(out + i * 8, 9, "%08x", h[i]);
         return std::string(out, 64);
-    }
-};
-
-/* ── CRC-32 (zip) ───────────────────────────────────────────────────── */
-
-uint32_t crc32_of(const uint8_t *d, size_t n)
-{
-    static uint32_t table[256];
-    static bool ready = false;
-    if (!ready) {
-        for (uint32_t i = 0; i < 256; i++) {
-            uint32_t c = i;
-            for (int k = 0; k < 8; k++) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-            table[i] = c;
-        }
-        ready = true;
-    }
-    uint32_t c = 0xFFFFFFFFu;
-    for (size_t i = 0; i < n; i++) c = table[(c ^ d[i]) & 255] ^ (c >> 8);
-    return c ^ 0xFFFFFFFFu;
-}
-
-/* ── Inflate (RFC 1951), after the structure of zlib's puff.c ───────── */
-
-struct Inflate {
-    const uint8_t *in;
-    size_t inlen, pos = 0;
-    uint32_t bitbuf = 0;
-    int bitcnt = 0;
-    bool err = false;
-    std::vector<uint8_t> &out;
-    size_t outmax;
-
-    struct Huff { short count[16]; short symbol[288]; };
-
-    Inflate(const uint8_t *i, size_t n, std::vector<uint8_t> &o, size_t max) : in(i), inlen(n), out(o), outmax(max) {}
-
-    int bits(int need)
-    {
-        uint32_t val = bitbuf;
-        while (bitcnt < need) {
-            if (pos >= inlen) { err = true; return 0; }
-            val |= (uint32_t)in[pos++] << bitcnt;
-            bitcnt += 8;
-        }
-        bitbuf = val >> need;
-        bitcnt -= need;
-        return (int)(val & ((1u << need) - 1));
-    }
-    bool stored()
-    {
-        bitbuf = 0;
-        bitcnt = 0;
-        if (pos + 4 > inlen) return false;
-        unsigned len = in[pos] | in[pos + 1] << 8, nlen = in[pos + 2] | in[pos + 3] << 8;
-        pos += 4;
-        if (len != (~nlen & 0xffff) || pos + len > inlen || out.size() + len > outmax) return false;
-        out.insert(out.end(), in + pos, in + pos + len);
-        pos += len;
-        return true;
-    }
-    int decode(const Huff &h)
-    {
-        int code = 0, first = 0, index = 0;
-        for (int len = 1; len <= 15; len++) {
-            code |= bits(1);
-            if (err) return -1;
-            int count = h.count[len];
-            if (code - count < first) return h.symbol[index + (code - first)];
-            index += count;
-            first += count;
-            first <<= 1;
-            code <<= 1;
-        }
-        return -1;
-    }
-    static int construct(Huff &h, const short *length, int n)
-    {
-        for (int len = 0; len <= 15; len++) h.count[len] = 0;
-        for (int s = 0; s < n; s++) h.count[length[s]]++;
-        if (h.count[0] == n) return 0;
-        int left = 1;
-        for (int len = 1; len <= 15; len++) {
-            left <<= 1;
-            left -= h.count[len];
-            if (left < 0) return left;
-        }
-        short offs[16];
-        offs[1] = 0;
-        for (int len = 1; len < 15; len++) offs[len + 1] = (short)(offs[len] + h.count[len]);
-        for (int s = 0; s < n; s++)
-            if (length[s] != 0) h.symbol[offs[length[s]]++] = (short)s;
-        return left;
-    }
-    bool codes(const Huff &lencode, const Huff &distcode)
-    {
-        static const short lbase[29] = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 };
-        static const short lext[29] = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 };
-        static const short dbase[30] = { 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 };
-        static const short dext[30] = { 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 };
-        for (;;) {
-            int sym = decode(lencode);
-            if (sym < 0 || err) return false;
-            if (sym < 256) {
-                if (out.size() >= outmax) return false;
-                out.push_back((uint8_t)sym);
-            } else if (sym == 256) {
-                return true;
-            } else {
-                sym -= 257;
-                if (sym >= 29) return false;
-                int len = lbase[sym] + bits(lext[sym]);
-                int ds = decode(distcode);
-                if (ds < 0 || ds >= 30 || err) return false;
-                size_t dist = (size_t)(dbase[ds] + bits(dext[ds]));
-                if (err || dist > out.size() || out.size() + len > outmax) return false;
-                size_t from = out.size() - dist;
-                for (int i = 0; i < len; i++) out.push_back(out[from + i]);
-            }
-        }
-    }
-    bool fixed()
-    {
-        static Huff lencode, distcode;
-        static bool ready = false;
-        if (!ready) {
-            short lengths[288];
-            int s = 0;
-            for (; s < 144; s++) lengths[s] = 8;
-            for (; s < 256; s++) lengths[s] = 9;
-            for (; s < 280; s++) lengths[s] = 7;
-            for (; s < 288; s++) lengths[s] = 8;
-            construct(lencode, lengths, 288);
-            for (s = 0; s < 30; s++) lengths[s] = 5;
-            construct(distcode, lengths, 30);
-            ready = true;
-        }
-        return codes(lencode, distcode);
-    }
-    bool dynamic()
-    {
-        static const short order[19] = { 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
-        short lengths[320];
-        Huff lencode, distcode;
-        int nlen = bits(5) + 257, ndist = bits(5) + 1, ncode = bits(4) + 4;
-        if (err || nlen > 286 || ndist > 30) return false;
-        int i = 0;
-        for (; i < ncode; i++) lengths[order[i]] = (short)bits(3);
-        for (; i < 19; i++) lengths[order[i]] = 0;
-        if (err || construct(lencode, lengths, 19) != 0) return false;
-        int index = 0;
-        while (index < nlen + ndist) {
-            int sym = decode(lencode);
-            if (sym < 0 || err) return false;
-            if (sym < 16) {
-                lengths[index++] = (short)sym;
-            } else {
-                short len = 0;
-                int rep;
-                if (sym == 16) {
-                    if (index == 0) return false;
-                    len = lengths[index - 1];
-                    rep = 3 + bits(2);
-                } else if (sym == 17) {
-                    rep = 3 + bits(3);
-                } else {
-                    rep = 11 + bits(7);
-                }
-                if (err || index + rep > nlen + ndist) return false;
-                while (rep--) lengths[index++] = len;
-            }
-        }
-        if (lengths[256] == 0) return false;
-        int e = construct(lencode, lengths, nlen);
-        if (e < 0 || (e > 0 && nlen - lencode.count[0] != 1)) return false;
-        e = construct(distcode, lengths + nlen, ndist);
-        if (e < 0 || (e > 0 && ndist - distcode.count[0] != 1)) return false;
-        return codes(lencode, distcode);
-    }
-    bool run()
-    {
-        int last;
-        do {
-            last = bits(1);
-            int type = bits(2);
-            if (err) return false;
-            bool ok = type == 0 ? stored() : type == 1 ? fixed() : type == 2 ? dynamic() : false;
-            if (!ok) return false;
-        } while (!last);
-        return true;
     }
 };
 
@@ -359,6 +172,18 @@ bool ends_with(const std::string &s, const char *e)
 
 const char k_launcher[] = "OpenTricky.exe";
 const char k_game[] = "SSX Tricky.exe";
+const char k_bin[] = "bin";
+/* What an install of 0.1.1 or older had beside OpenTricky.exe and is now in
+ * bin\: the release zip still has copies of them there for the updaters of
+ * those versions (they refuse a zip without them). Once bin\ holds the game
+ * they are removed (ot_install_tidy_root, or the update itself). */
+const char *const k_program_copies[] = { "SSX Tricky.exe", "ui", "THIRD-PARTY-LICENSES.txt" };
+
+/* The game in `dir`: SSX Tricky.exe and ui\. */
+bool has_game(const std::string &dir)
+{
+    return exists(dir + "\\" + k_game) && !is_dir(dir + "\\" + k_game) && is_dir(dir + "\\ui");
+}
 
 /* What an update never writes, removes or backs up: the player's things and the updater's own. */
 bool never_touched(const std::string &name)
@@ -382,13 +207,36 @@ void set_fail(OtInstallState &st, const char *fail, const std::string &detail)
     st.detail = detail;
 }
 
-/* ── Putting top-level entries in place, with a way back ─────────────── */
+/* ── Putting entries in place, with a way back ─────────────────────────── */
 
+/* An entry is a name of the program's folder, or "bin\<name>": bin\ is
+ * updated one entry at a time, so what the player put there stays. */
 struct Op {
     std::string name;
     std::string src;            /* "" = remove */
     bool copy = false;          /* copy from src (restore) instead of moving it (update) */
 };
+
+/* "bin\x" -> "bin"; "x" -> "". */
+std::string parent_of(const std::string &name)
+{
+    size_t s = name.find_last_of("\\/");
+    return s == std::string::npos ? std::string() : name.substr(0, s);
+}
+
+/* A name read from a manifest: one entry of the program's folder, or one of
+ * bin\ (one level); never a player's file, never a way out of the folder. */
+bool manifest_name_ok(const std::string &name)
+{
+    std::string leaf = name;
+    size_t s = name.find_first_of("\\/");
+    if (s != std::string::npos) {
+        if (lower(name.substr(0, s)) != k_bin) return false;
+        leaf = name.substr(s + 1);
+    }
+    if (leaf.empty() || leaf == "." || leaf == ".." || leaf.find_first_of("\\/:") != std::string::npos) return false;
+    return !never_touched(leaf);
+}
 
 bool apply_ops(const std::string &base, const std::vector<Op> &ops, const std::string &backup,
                const std::string &version_now, const std::string &fail_at, std::string &detail)
@@ -401,6 +249,7 @@ bool apply_ops(const std::string &base, const std::vector<Op> &ops, const std::s
     for (size_t i = 0; i < ops.size(); i++) {
         std::string cur = base + ops[i].name;
         if (!exists(cur)) { manifest += "new " + ops[i].name + "\n"; continue; }
+        if (!parent_of(ops[i].name).empty()) mkdirs(backup + "\\" + parent_of(ops[i].name));
         if (!copy_any(cur, backup + "\\" + ops[i].name)) { detail = "cannot back up " + ops[i].name; return false; }
         had[i] = true;
         manifest += "had " + ops[i].name + "\n";
@@ -419,7 +268,11 @@ bool apply_ops(const std::string &base, const std::vector<Op> &ops, const std::s
     for (; touched < ops.size() && ok; touched++) {
         const Op &op = ops[touched];
         std::string cur = base + op.name;
-        if (!fail_at.empty() && lower(op.name) == lower(fail_at)) { detail = "test failure at " + op.name; ok = false; continue; }
+        if (!fail_at.empty() && (lower(op.name) == lower(fail_at) || lower(parent_of(op.name)) == lower(fail_at))) {
+            detail = "test failure at " + op.name;
+            ok = false;
+            continue;
+        }
         if (lower(op.name) == lower(k_launcher)) {
             /* The running launcher cannot be overwritten, but it can be renamed. */
             remove_any(cur + ".old");
@@ -430,6 +283,7 @@ bool apply_ops(const std::string &base, const std::vector<Op> &ops, const std::s
             continue;
         }
         if (op.src.empty()) continue;
+        if (!parent_of(op.name).empty()) mkdirs(base + parent_of(op.name));
         if (!(op.copy ? copy_any(op.src, cur) : move_any(op.src, cur))) { detail = "cannot put " + op.name + " in place"; ok = false; }
     }
     if (ok) return true;
@@ -448,19 +302,51 @@ bool apply_ops(const std::string &base, const std::vector<Op> &ops, const std::s
         bool gone = remove_any(cur);      /* fails on a file still in use: then it is the old one */
         if (had[i] && (gone || is_dir(cur))) copy_any(backup + "\\" + op.name, cur);
     }
+#ifdef _WIN32
+    RemoveDirectoryW(W(base + k_bin).c_str());     /* only when empty: a bin\ this attempt made */
+#endif
     return false;
 }
 
-std::vector<Op> stage_ops(const std::string &stage)
+/* What an update does with the unpacked zip. Its game is in bin\ (0.1.2 and
+ * later) or beside OpenTricky.exe (older). With the game in bin\:
+ *  - its copies of bin\'s entries beside it are not installed (they are for
+ *    the updaters of 0.1.1), and the old copies in the program's folder are
+ *    removed by the update itself (backed up: Restore puts them back);
+ *  - bin\, when the program's folder has one, is updated one entry at a time. */
+std::vector<Op> stage_ops(const std::string &stage, const std::string &base)
 {
     std::vector<Op> ops;
+    const std::string sbin = stage + "\\" + k_bin;
+    const bool game_in_bin = has_game(sbin);
     for (const std::string &n : list_dir(stage)) {
         if (never_touched(n)) continue;
+        bool copy_of_bin = false;
+        for (const char *c : k_program_copies)
+            if (lower(n) == lower(c)) copy_of_bin = true;
+        if (game_in_bin && copy_of_bin) continue;
+        if (lower(n) == k_bin && is_dir(stage + "\\" + n) && is_dir(base + k_bin)) {
+            for (const std::string &c : list_dir(stage + "\\" + n)) {
+                if (never_touched(c)) continue;
+                Op op;
+                op.name = std::string(k_bin) + "\\" + c;
+                op.src = stage + "\\" + n + "\\" + c;
+                ops.push_back(op);
+            }
+            continue;
+        }
         Op op;
         op.name = n;
         op.src = stage + "\\" + n;
         ops.push_back(op);
     }
+    if (game_in_bin)
+        for (const char *c : k_program_copies)
+            if (exists(base + c)) {
+                Op op;
+                op.name = c;                   /* src "": removed */
+                ops.push_back(op);
+            }
     /* The launcher last: the rest is in place before it changes. */
     std::stable_partition(ops.begin(), ops.end(), [](const Op &o) { return lower(o.name) != lower(k_launcher); });
     return ops;
@@ -501,48 +387,43 @@ std::string ot_sha256_file(const std::string &path)
     return s.hex();
 }
 
-/* Signature of the release (Ed25519 over the zip's SHA-256, version and
- * channel), once the project has its key. Until then, the SHA-256 listed in
- * the release's SHA256SUMS.txt is the check. */
-static bool ot_install_signature_ok(const std::string & /*zip*/, const std::string & /*sha256*/)
-{
-    return true;
-}
+/* The largest file a release may hold once unpacked, and the whole release
+ * (the game is ~170 MB): a zip that announces more is refused before
+ * anything is written. */
+static const mz_uint64 k_unzip_file_max = (mz_uint64)1 << 30;
+static const mz_uint64 k_unzip_total_max = (mz_uint64)4 << 30;
 
 bool ot_unzip(const std::string &zip, const std::string &dir, std::string &error)
 {
     std::string z;
     if (!ot_read_file(zip, z, (size_t)1 << 31)) { error = "cannot read the zip"; return false; }
-    const uint8_t *d = (const uint8_t *)z.data();
-    size_t n = z.size();
-    auto u16 = [&](size_t o) -> uint32_t { return o + 2 <= n ? (uint32_t)(d[o] | d[o + 1] << 8) : 0; };
-    auto u32 = [&](size_t o) -> uint32_t { return o + 4 <= n ? (uint32_t)(d[o] | d[o + 1] << 8 | d[o + 2] << 16 | (uint32_t)d[o + 3] << 24) : 0; };
-    /* End of central directory (the last 64 KB, comment included). */
-    size_t e = std::string::npos;
-    if (n >= 22) {
-        size_t stop = n > 65557 ? n - 65557 : 0;
-        for (size_t i = n - 22 + 1; i-- > stop;)
-            if (u32(i) == 0x06054b50) { e = i; break; }
+    mz_zip_archive za;
+    mz_zip_zero_struct(&za);
+    if (!mz_zip_reader_init_mem(&za, z.data(), z.size(), 0)) {
+        error = std::string("not a zip (") + mz_zip_get_error_string(mz_zip_get_last_error(&za)) + ")";
+        return false;
     }
-    if (e == std::string::npos) { error = "not a zip"; return false; }
-    uint32_t count = u16(e + 10), cd = u32(e + 16);
-    struct Entry { std::string name; uint32_t method, crc, csize, usize, local; };
+    struct Close { mz_zip_archive *a; ~Close() { mz_zip_reader_end(a); } } close_zip{ &za };
+    auto why = [&za]() {
+        mz_zip_error e = mz_zip_get_last_error(&za);
+        return e == MZ_ZIP_NO_ERROR ? std::string() : std::string(" (") + mz_zip_get_error_string(e) + ")";
+    };
+
+    struct Entry { mz_uint index; std::string name; mz_zip_archive_file_stat st; };
     std::vector<Entry> ents;
-    size_t p = cd;
-    for (uint32_t i = 0; i < count; i++) {
-        if (u32(p) != 0x02014b50) { error = "damaged zip directory"; return false; }
+    mz_uint count = mz_zip_reader_get_num_files(&za);
+    for (mz_uint i = 0; i < count; i++) {
         Entry en;
-        en.method = u16(p + 10);
-        en.crc = u32(p + 16);
-        en.csize = u32(p + 20);
-        en.usize = u32(p + 24);
-        uint32_t nl = u16(p + 28), el = u16(p + 30), cl = u16(p + 32);
-        en.local = u32(p + 42);
-        if (p + 46 + nl > n) { error = "damaged zip directory"; return false; }
-        en.name.assign((const char *)d + p + 46, nl);
+        en.index = i;
+        if (!mz_zip_reader_file_stat(&za, i, &en.st)) { error = "damaged zip directory" + why(); return false; }
+        /* The full name (the stat's copy is cut at 512 bytes). */
+        mz_uint nl = mz_zip_reader_get_filename(&za, i, nullptr, 0);
+        if (nl == 0) { error = "damaged zip directory"; return false; }
+        std::vector<char> nb(nl);
+        mz_zip_reader_get_filename(&za, i, nb.data(), nl);
+        en.name.assign(nb.data(), nl - 1);
         for (char &c : en.name) if (c == '\\') c = '/';
         ents.push_back(en);
-        p += 46 + nl + el + cl;
     }
     /* One folder holding everything (OpenTricky-x.y.z-win64/): its content is the program. */
     std::string top;
@@ -552,7 +433,8 @@ bool ot_unzip(const std::string &zip, const std::string &dir, std::string &error
         for (const Entry &en : ents)
             if (en.name.compare(0, top.size(), top) != 0) { top.clear(); break; }
     }
-    if (!mkdirs(dir)) { error = "cannot make " + dir; return false; }
+    /* Every name and size is checked before anything is written. */
+    mz_uint64 total = 0;
     for (const Entry &en : ents) {
         std::string rel = en.name.substr(top.size());
         if (rel.empty()) continue;
@@ -561,42 +443,53 @@ bool ot_unzip(const std::string &zip, const std::string &dir, std::string &error
             error = "unsafe path in the zip: " + rel;
             return false;
         }
-        std::string out = dir + "\\";
-        for (char c : rel) out += c == '/' ? '\\' : c;
-        if (rel.back() == '/') { if (!mkdirs(out.substr(0, out.size() - 1))) { error = "cannot make a folder"; return false; } continue; }
-        size_t lp = en.local;
-        if (u32(lp) != 0x04034b50) { error = "damaged zip entry " + rel; return false; }
-        size_t data = lp + 30 + u16(lp + 26) + u16(lp + 28);
-        if (data + en.csize > n) { error = "zip cut short at " + rel; return false; }
-        std::vector<uint8_t> buf;
-        if (en.method == 0) {
-            buf.assign(d + data, d + data + en.csize);
-        } else if (en.method == 8) {
-            buf.reserve(en.usize);
-            Inflate inf(d + data, en.csize, buf, en.usize);
-            if (!inf.run()) { error = "damaged data in " + rel; return false; }
-        } else {
+        if (rel.back() == '/') continue;
+        if (en.st.m_is_encrypted || !en.st.m_is_supported || (en.st.m_method != 0 && en.st.m_method != MZ_DEFLATED)) {
             error = "unknown compression in " + rel;
             return false;
         }
-        if (buf.size() != en.usize || crc32_of(buf.data(), buf.size()) != en.crc) { error = "damaged data in " + rel; return false; }
+        if (en.st.m_method == 0 && en.st.m_comp_size != en.st.m_uncomp_size) { error = "damaged data in " + rel; return false; }
+        total += en.st.m_uncomp_size;
+        if (en.st.m_uncomp_size > k_unzip_file_max || total > k_unzip_total_max) { error = "too large: " + rel; return false; }
+    }
+    if (!mkdirs(dir)) { error = "cannot make " + dir; return false; }
+    for (const Entry &en : ents) {
+        std::string rel = en.name.substr(top.size());
+        if (rel.empty()) continue;
+        std::string out = dir + "\\";
+        for (char c : rel) out += c == '/' ? '\\' : c;
+        if (rel.back() == '/') { if (!mkdirs(out.substr(0, out.size() - 1))) { error = "cannot make a folder"; return false; } continue; }
+        /* miniz inflates into exactly the announced size and fails on a
+         * cut, longer or damaged stream; the CRC-32 is checked again here. */
+        size_t size = (size_t)en.st.m_uncomp_size;
+        std::vector<uint8_t> buf(size ? size : 1);
+        if (!mz_zip_reader_extract_to_mem(&za, en.index, buf.data(), size, 0)) { error = "damaged data in " + rel + why(); return false; }
+        if ((mz_uint32)mz_crc32(MZ_CRC32_INIT, buf.data(), size) != en.st.m_crc32) { error = "damaged data in " + rel; return false; }
         size_t s = out.find_last_of('\\');
         if (s != std::string::npos) mkdirs(out.substr(0, s));
         SDL_IOStream *io = SDL_IOFromFile(out.c_str(), "wb");
         if (!io) { error = "cannot write " + rel; return false; }
-        bool ok = buf.empty() || SDL_WriteIO(io, buf.data(), buf.size()) == buf.size();
+        bool ok = size == 0 || SDL_WriteIO(io, buf.data(), size) == size;
         if (!SDL_CloseIO(io) || !ok) { error = "cannot write " + rel; return false; }
     }
     return true;
 }
 
+std::string ot_program_dir(const std::string &base)
+{
+    return has_game(base + k_bin) ? base + k_bin + "\\" : base;
+}
+
 bool ot_install_writable(const std::string &base)
 {
 #ifdef _WIN32
-    HANDLE h = CreateFileW(W(base + "update-write-test.tmp").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    CloseHandle(h);
+    for (const std::string &dir : { base, base + k_bin + "\\" }) {
+        if (dir != base && !is_dir(base + k_bin)) continue;
+        HANDLE h = CreateFileW(W(dir + "update-write-test.tmp").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return false;
+        CloseHandle(h);
+    }
     return true;
 #else
     (void)base;
@@ -607,9 +500,12 @@ bool ot_install_writable(const std::string &base)
 bool ot_install_game_running(const std::string &base)
 {
 #ifdef _WIN32
-    HANDLE h = CreateFileW(W(base + k_game).c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h != INVALID_HANDLE_VALUE) { CloseHandle(h); return false; }
-    return GetLastError() == ERROR_SHARING_VIOLATION;
+    for (const std::string &exe : { base + k_game, base + k_bin + "\\" + k_game }) {
+        HANDLE h = CreateFileW(W(exe).c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h != INVALID_HANDLE_VALUE) { CloseHandle(h); continue; }
+        if (GetLastError() == ERROR_SHARING_VIOLATION) return true;
+    }
+    return false;
 #else
     (void)base;
     return false;
@@ -626,6 +522,16 @@ bool ot_install_has_backup(const std::string &base, std::string &version)
     size_t e = m.find('\n', v + 9);
     version = m.substr(v + 9, e == std::string::npos ? std::string::npos : e - v - 9);
     return true;
+}
+
+void ot_install_tidy_root(const std::string &base, std::vector<std::string> &removed, std::vector<std::string> &failed)
+{
+    if (ot_program_dir(base) == base) return;          /* the game is not in bin\: nothing to tidy */
+    for (const char *c : k_program_copies) {
+        if (!exists(base + c)) continue;
+        if (remove_any(base + c)) removed.push_back(c);
+        else failed.push_back(c);
+    }
 }
 
 void ot_install_cleanup(const std::string &base)
@@ -665,6 +571,26 @@ void ot_install_update(const OtInstallRequest &req, OtInstallState &st)
                  req.sums_url.empty() ? "no SHA256SUMS.txt in the release" : "SHA256SUMS.txt: " + (sums.error.empty() ? "HTTP " + std::to_string(sums.status) : sums.error));
         return finish(false);
     }
+    /* The signature of SHA256SUMS.txt (ot_sign.h), before a line of it is
+     * read: refused when absent or wrong, once the launcher holds the key. */
+    if (ot_sign_key_set(ot_release_key)) {
+        if (req.sig_url.empty()) { set_fail(st, "signature", ot_sign_text(OT_SIG_ABSENT)); return finish(false); }
+        q.url = req.sig_url;
+        q.max_body = 1024;
+        OtHttp sig = ot_http_get(q);
+        if (sig.status != 200 || !sig.error.empty()) {
+            set_fail(st, "download", "SHA256SUMS.txt.sig: " + (sig.error.empty() ? "HTTP " + std::to_string(sig.status) : sig.error));
+            return finish(false);
+        }
+        OtSigResult r = ot_sign_check(sums.body.data(), sums.body.size(), sig.body.data(), sig.body.size(), ot_release_key);
+        if (r != OT_SIG_OK) { set_fail(st, "signature", ot_sign_text(r)); return finish(false); }
+        /* The signed list names the zip, and the zip's name its version: an
+         * older signed release under a newer tag is refused. */
+        if (!req.version_new.empty() && req.zip_name.find("-" + req.version_new + "-") == std::string::npos) {
+            set_fail(st, "signature", req.zip_name + " is not version " + req.version_new);
+            return finish(false);
+        }
+    }
     std::string want = hex_of_line(sums.body, req.zip_name);
     if (want.empty()) { set_fail(st, "verify", req.zip_name + " is not listed in SHA256SUMS.txt"); return finish(false); }
     std::string zip = tmp + "\\" + req.zip_name;
@@ -685,11 +611,10 @@ void ot_install_update(const OtInstallRequest &req, OtInstallState &st)
     st.step = 2;
     std::string got = ot_sha256_file(zip);
     if (got != want) { set_fail(st, "verify", "SHA-256 " + got + " instead of " + want); return finish(false); }
-    if (!ot_install_signature_ok(zip, got)) { set_fail(st, "verify", "signature"); return finish(false); }
     std::string err;
     if (!ot_unzip(zip, stage, err)) { set_fail(st, "verify", err); return finish(false); }
-    if (!exists(stage + "\\" + k_game) || !exists(stage + "\\" + k_launcher) || !is_dir(stage + "\\ui")) {
-        set_fail(st, "verify", "the zip does not hold SSX Tricky.exe, OpenTricky.exe and ui\\");
+    if (!exists(stage + "\\" + k_launcher) || !(has_game(stage + "\\" + k_bin) || has_game(stage))) {
+        set_fail(st, "verify", "the zip does not hold OpenTricky.exe and the game (SSX Tricky.exe and ui\\, in bin\\ or beside it)");
         return finish(false);
     }
 
@@ -697,7 +622,7 @@ void ot_install_update(const OtInstallRequest &req, OtInstallState &st)
     st.step = 3;
     if (ot_install_game_running(req.base)) { set_fail(st, "busy", "the game is running"); return finish(false); }
     std::string detail;
-    if (!apply_ops(req.base, stage_ops(stage), backup, req.version_now, req.fail_at, detail)) {
+    if (!apply_ops(req.base, stage_ops(stage, req.base), backup, req.version_now, req.fail_at, detail)) {
         set_fail(st, "install", detail);
         return finish(false);
     }
@@ -724,6 +649,30 @@ void ot_install_restore(const OtInstallRequest &req, OtInstallState &st)
     std::string m;
     if (!ot_read_file(old + "\\manifest.txt", m, 1 << 20)) { set_fail(st, "install", "no previous version in old\\"); return finish(false); }
     std::vector<Op> ops;
+    /* bin\ as one entry (the update from 0.1.1 added it whole): restored one
+     * entry at a time too, so a file the player put in it stays. */
+    auto bin_ops = [&](bool had) {
+        const std::string cur = req.base + k_bin, back = old + "\\" + k_bin;
+        std::vector<std::string> was = had ? list_dir(back) : std::vector<std::string>();
+        for (const std::string &c : was) {
+            if (never_touched(c)) continue;
+            Op op;
+            op.name = std::string(k_bin) + "\\" + c;
+            op.src = back + "\\" + c;
+            op.copy = true;
+            ops.push_back(op);
+        }
+        for (const std::string &c : list_dir(cur)) {
+            if (never_touched(c)) continue;
+            bool kept = false;
+            for (const std::string &w : was)
+                if (lower(w) == lower(c)) kept = true;
+            if (kept) continue;
+            Op op;
+            op.name = std::string(k_bin) + "\\" + c;      /* src "": removed */
+            ops.push_back(op);
+        }
+    };
     size_t p = 0;
     while (p < m.size()) {
         size_t q = m.find('\n', p);
@@ -735,7 +684,8 @@ void ot_install_restore(const OtInstallRequest &req, OtInstallState &st)
         if (line.rfind("had ", 0) == 0) { op.name = line.substr(4); op.src = old + "\\" + op.name; op.copy = true; }
         else if (line.rfind("new ", 0) == 0) op.name = line.substr(4);
         else continue;
-        if (op.name.empty() || never_touched(op.name) || op.name.find_first_of("\\/:") != std::string::npos) continue;
+        if (!manifest_name_ok(op.name)) continue;
+        if (lower(op.name) == k_bin) { bin_ops(op.copy); continue; }
         ops.push_back(op);
     }
     std::stable_partition(ops.begin(), ops.end(), [](const Op &o) { return lower(o.name) != lower(k_launcher); });
@@ -748,6 +698,15 @@ void ot_install_restore(const OtInstallRequest &req, OtInstallState &st)
     }
     remove_any(old);
     remove_any(tmp + "\\undo");
+    /* bin\ goes when nothing is left in it; with a file of the player's it stays
+     * (an older version does not look at it). A restored version in bin\ keeps it. */
+    if (is_dir(req.base + k_bin) && !has_game(req.base + k_bin)) {
+        if (list_dir(req.base + k_bin).empty()) remove_any(req.base + k_bin);
+        else {
+            std::lock_guard<std::mutex> lk(st.m);
+            st.detail = "bin\\ kept: it holds files that are not the program's";
+        }
+    }
     st.step = 4;
     finish(true);
 }

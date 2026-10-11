@@ -8,9 +8,11 @@
  *                      display, tearing possible in full screen
  *   XBOX_SYNC=vsync    flip model, Present(1): one frame per refresh at most
  *   XBOX_SYNC=adaptive flip model, Present(1) when the frame is on time,
- *                      Present(0) + tearing when it is late (average pace
- *                      below the refresh rate) rather than waiting for the
- *                      next refresh
+ *                      Present(0) + tearing when it is late while the game
+ *                      stays slower than the refresh rate (or than the frame
+ *                      rate limit, d3d8_sync_set_pace) over ~0.5 s, rather
+ *                      than waiting for the next refresh; a load (no frame
+ *                      for 60 ms) is not taken for a slow game
  *   XBOX_SYNC_LATENCY=N  (flip model) frames queued at most, 1..3, default 2;
  *                      wait on the latency object before each Present
  *   XBOX_PACING_LOG=1  [PACING] smoothness summary every 10 s and at exit
@@ -50,6 +52,10 @@ HRESULT d3d8_sync_present(IDXGISwapChain *sc, double *dxgi_ms);
 void d3d8_sync_report(void);
 /* Before the chain is released. */
 void d3d8_sync_release(void);
+
+/* Frame rate limit of the game (fps, 0 = none): with Adaptive, frames that
+ * keep up with a limit below the display are on time. Any thread. */
+void d3d8_sync_set_pace(int fps);
 
 /* Refresh rate (Hz, integer) of the display holding hwnd, or of the primary
  * display if hwnd is NULL; 0 if unknown. */

@@ -18,6 +18,8 @@
 #   3b. hand-written bodies (one: 0x001788B2)
 #   4. the upstream post-passes listed in PASSES below, in order, each one once,
 #      then the fork's own passes (port/tools/fork/*.py)
+#   4b. guard (full regen only): no never-taken `if (_flags` branch outside the
+#      known list (port/tools/fork/check_deadflags.py)
 #
 # Every change to gen/ is made by this script; nothing in gen/ is edited by hand.
 # Needs the MSYS2 UCRT64 python (capstone): PATH=/c/msys64/ucrt64/bin:$PATH
@@ -135,7 +137,10 @@ PASSES=(
   "fork_fpu_cmp_split|$PY \"$FORK/fix_fpu_cmp_split.py\" \"$GEN\""
   "fork_std_scasb|$PY \"$FORK/fix_std_scasb.py\" \"$GEN\""
   "fork_kickwait|$PY \"$FORK/fix_kickwait.py\" \"$GEN\""
+  "fork_deadflags|$PY \"$FORK/fix_deadflags.py\" \"$GEN\""
   "fork_riderlist|$PY \"$FORK/fix_riderlist.py\" \"$GEN\""
+  "fork_speechhold|$PY \"$FORK/fix_speechhold.py\" \"$GEN\""
+  "fork_crowdemit|$PY \"$FORK/fix_crowdemit.py\" \"$GEN\""
 )
 i=0
 for p in "${PASSES[@]}"; do
@@ -147,8 +152,25 @@ for p in "${PASSES[@]}"; do
     echo "   [$i] $name"
     (cd "$AUDIT" && eval "$cmd") > "$ROOT/build/fork_regen_pass$i.log" 2>&1 \
         || { echo "pass $i ($name) failed:"; tail -20 "$ROOT/build/fork_regen_pass$i.log"; exit 1; }
-    tail -3 "$ROOT/build/fork_regen_pass$i.log" | sed 's/^/       /'
+    # The summary is at the end of each log; a "left alone:" list is shown in full.
+    if grep -q '^left alone:' "$ROOT/build/fork_regen_pass$i.log"; then
+        grep -E "^(would )?revived " "$ROOT/build/fork_regen_pass$i.log" | sed 's/^/       /' || true
+        sed -n '/^left alone:/,$p' "$ROOT/build/fork_regen_pass$i.log" | sed 's/^/       /'
+    else
+        tail -6 "$ROOT/build/fork_regen_pass$i.log" | sed 's/^/       /'
+    fi
     if [ "$ONLY" != 0 ]; then echo "then --only pass $i $name" >> "$MANIFEST"; else echo "pass $i $name" >> "$MANIFEST"; fi
 done
 [ "$UPTO" -lt "${#PASSES[@]}" ] && echo "(stopped after pass $UPTO: --upto)" >> "$MANIFEST"
+# Guard: a branch the lifter cut from its flags is never taken. After a full regen,
+# the ones left must be the known harmless ones (port/tools/fork/check_deadflags.py).
+if [ "$ONLY" = 0 ] && [ "$UPTO" -ge "${#PASSES[@]}" ] && [ -z "$SKIP" ]; then
+    echo "== [4b] guard: never-taken branches"
+    "$PY" "$FORK/check_deadflags.py" "$GEN" > "$ROOT/build/fork_regen_deadflags.log" 2>&1 \
+        || { cat "$ROOT/build/fork_regen_deadflags.log"; exit 1; }
+    sed 's/^/       /' "$ROOT/build/fork_regen_deadflags.log"
+    echo "guard deadflags: $(head -1 "$ROOT/build/fork_regen_deadflags.log")" >> "$MANIFEST"
+else
+    echo "   (guard [4b] not run: partial regen)"
+fi
 echo "done: $GEN"

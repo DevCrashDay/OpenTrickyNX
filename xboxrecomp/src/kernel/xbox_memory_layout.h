@@ -72,6 +72,16 @@ extern "C" {
  *  to it no matter how much RAM this port maps. */
 #define XBOX_GPU_VISIBLE_END    (64u * 1024u * 1024u)
 
+/* GPU instance memory (MmClaimGpuInstanceMemory). The console keeps it at
+ * the top of RAM and hands the title a pointer to its END; the title claims
+ * NumberOfBytes below that pointer (20 KB here). This port parks it in a
+ * 64 KB block at 0xFF000000 inside the GPU MMIO window (flash ROM space on
+ * the console, never written by a title; plain zeroed memory here): a fixed
+ * guest address that no RAM mirror aliases and nothing else in the aperture
+ * uses. */
+#define XBOX_GPU_INSTANCE_SIZE   0x00010000u
+#define XBOX_GPU_INSTANCE_END_VA 0xFF010000u
+
 /* The 64 MB of RAM is also visible uncached at 0x80000000 and write-combined
  * at 0xF0000000. Guest code folds these in XBOX_PTR (recomp_types.h); host
  * code that takes a guest address -- the kernel bridges -- folds with this.

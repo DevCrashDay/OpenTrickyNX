@@ -89,6 +89,11 @@ static const SettingChoice k_pad[] = {
     { "DpadUp", "D-pad up" }, { "DpadDown", "D-pad down" }, { "DpadLeft", "D-pad left" },
     { "DpadRight", "D-pad right" },
 };
+/* "unlockall": a save of its own (UnlockAll in the save folder) with the
+ * game's own unlock-everything cheat on (XBOX_UNLOCK_ALL=1). */
+static const SettingChoice k_save_profile[] = {
+    { "mine", "My save" }, { "unlockall", "Unlock all" },
+};
 static const SettingChoice k_check_updates[] = {
     { "ask", "Ask before installing" }, { "never", "Never" },
 };
@@ -146,7 +151,7 @@ static const SettingDef k_reg[SETTINGS_COUNT] = {
         "The screen the game opens on: 0 = the main screen, 1, 2... = the others, in Windows' order.",
         SETTING_INT, NULL, 0, 0, 16, "0", "XBOX_MONITOR", SETTING_PENDING, NOP },
     [S_RESOLUTION] = { "Display", "Resolution", T_DISPLAY, "SCREEN", "Resolution",
-        "The size the game is drawn at. Auto: the screen's own size in fullscreen, the largest that fits in a window.",
+        "The size the game is drawn at, among the sizes of the chosen screen shape. Auto: the screen's own size in fullscreen, the largest that fits in a window.",
         SETTING_RESOLUTION, NULL, 0, 0, 0, "auto", NULL, 0, P("auto", "auto", "1280x800") },
     [S_DISPLAY_MODE] = { "Display", "DisplayMode", T_DISPLAY, "SCREEN", "Display mode",
         "Window or borderless fullscreen. Alt+Enter (or F11) switches while playing.",
@@ -162,12 +167,12 @@ static const SettingDef k_reg[SETTINGS_COUNT] = {
         CHOICE(k_fov, "NoStretch"), "XBOX_WIDE_FOV", 0, NOP },
     [S_RACE_HUD] = { "Display", "RaceHud", T_DISPLAY, "WIDE SCREENS", "Race HUD size",
         "The race HUD in its own proportions at the edges of the screen, at this size; Like the Xbox stretches it to the screen as the console did.",
-        CHOICE(k_race_hud, "85"), "XBOX_HUD_SHAPE, XBOX_HUD_SIZE", 0, NOP },
+        CHOICE(k_race_hud, "85"), "XBOX_HUD_SHAPE, XBOX_HUD_SIZE", 0, P("xbox", "85", "85") },
     [S_FPS_LIMIT] = { "Display", "FrameRateLimit", T_DISPLAY, "FRAME RATE", "Frame rate limit",
         "The game itself always runs at 60 steps a second; above 60, the frames in between are smoothed.",
         CHOICE(k_fps_limit, "monitor"), "XBOX_FPS_CAP", SETTING_PC, P("60", "monitor", "60") },
     [S_VSYNC] = { "Display", "VSync", T_DISPLAY, "FRAME RATE", "VSync",
-        "On: no tearing. Adaptive: VSync, but a late frame is shown at once. Off: least delay, may tear.",
+        "On: no tearing. Adaptive: like On, but may tear (a shifted band) when the frame rate stays below the screen's. Off: least delay, may tear.",
         CHOICE(k_vsync, "on"), "XBOX_SYNC", 0, P("on", "on", "on") },
 
     /* ── GRAPHICS ── */
@@ -175,7 +180,7 @@ static const SettingDef k_reg[SETTINGS_COUNT] = {
         "Uses the HD textures of your HD pack folder.",
         BOOL_("0"), "XBOX_HD_TEXTURES", SETTING_PC, P("0", "0", "0") },
     [S_HD_PACK_FOLDER] = { "Graphics", "HdPackFolder", T_GRAPHICS, "TEXTURES", "HD pack folder",
-        "The folder of your HD texture pack; a relative path is relative to the game's folder.",
+        "The folder of your HD texture pack; a relative path is relative to the folder of OpenTricky.exe.",
         SETTING_PATH, NULL, 0, 0, 0, "", "XBOX_HD_TEXTURES", 0, NOP },
     [S_TEX_FILTER] = { "Graphics", "TextureFiltering", T_GRAPHICS, "TEXTURES", "Texture filtering",
         "Off: the textures as on the Xbox. 2x to 16x: sharper textures on slopes far away (anisotropic filtering).",
@@ -195,8 +200,8 @@ static const SettingDef k_reg[SETTINGS_COUNT] = {
 
     /* ── AUDIO ── */
     [S_SPEAKERS] = { "Audio", "Speakers", T_AUDIO, "GAME SOUND", "Speakers",
-        "Auto follows your Windows sound setup. 5.1 plays the game's surround mix; with headphones, turn on Windows Sonic or Dolby Atmos in Windows to hear it.",
-        CHOICE(k_speakers, "auto"), "XBOX_AUDIO_OUTPUT", SETTING_PC, NOP },
+        "Stereo by default. Auto follows your Windows sound setup. 5.1 plays the game's surround mix; with headphones, turn on Windows Sonic or Dolby Atmos in Windows to hear it.",
+        CHOICE(k_speakers, "stereo"), "XBOX_AUDIO_OUTPUT", SETTING_PC, NOP },
     [S_AUDIO_DELAY] = { "Audio", "AudioDelay", T_AUDIO, "GAME SOUND", "Audio delay",
         "Shorter is more responsive; make it longer if the sound crackles.",
         CHOICE(k_audio_delay, "8"), "XBOX_AUDIO_QUEUE", 0, NOP },
@@ -257,8 +262,11 @@ static const SettingDef k_reg[SETTINGS_COUNT] = {
         "Your SSX Tricky (USA) Xbox disc image (.iso or .xiso). PLAY stays off until it is set.",
         SETTING_PATH, NULL, 0, 0, 0, "", NULL, 0, NOP },
     [S_SAVE_FOLDER] = { "Game", "SaveFolder", T_GAME, "DISC AND SAVES", "Save games folder",
-        "Empty = automatic: Documents\\My Games\\SSX Tricky\\Saves (or Saves beside the game with portable.txt, or the hdd folder of an earlier version).",
+        "Empty = automatic: Documents\\My Games\\SSX Tricky\\Saves (or Saves beside OpenTricky.exe with portable.txt, or the hdd folder of an earlier version).",
         SETTING_PATH, NULL, 0, 0, 0, "", NULL, 0, NOP },
+    [S_SAVE_PROFILE] = { "Game", "SaveProfile", T_GAME, "DISC AND SAVES", "Save profile",
+        "My save: your own progress. Unlock all: everything open (the game's own unlock cheat), with a separate save in the UnlockAll folder; your own save is never touched.",
+        CHOICE(k_save_profile, "mine"), "XBOX_UNLOCK_ALL", 0, NOP },
     [S_SAVE_BACKUP] = { "Game", "SaveBackup", T_GAME, "DISC AND SAVES", "Save backup copy",
         "Before the game writes your save, a copy of the previous one is kept (UDATA-backup), so a damaged save can be brought back.",
         BOOL_("1"), "XBOX_SAVE_BACKUP", 0, NOP },
@@ -280,11 +288,14 @@ static const SettingDef k_reg[SETTINGS_COUNT] = {
         "Starts the game straight away. Hold Shift (or Select on a controller) at start to see the launcher again.",
         BOOL_("0"), NULL, SETTING_LAUNCHER, NOP },
     [S_SHOW_FPS] = { "Advanced", "ShowFrameRate", T_ADVANCED, "LAUNCH", "Show frame rate",
-        "The frame rate in the game window's title bar.",
+        "The frame rate in the game window's title bar: in a window only, not in fullscreen.",
         BOOL_("0"), NULL, 0, NOP },
     [S_THEME] = { "Launcher", "Theme", T_ADVANCED, "LAUNCH", "Launcher theme",
         "The track whose colours and card the launcher wears; Random picks one at each start.",
         CHOICE(k_theme, "random"), NULL, SETTING_LAUNCHER, NOP },
+    [S_SMOOTH_LEGS] = { "Advanced", "SmoothLegs", T_ADVANCED, "EXPERIMENTAL", "Smoother legs in turns",
+        "Experimental, visual only (PC). Smooths the leg and board shake riders have when carving, which comes from the original game. Gameplay is not affected. On by default; Original Xbox preset turns it off.",
+        BOOL_("1"), "XBOX_FPS_SMOOTH_LEGS", SETTING_PC, P("0", "1", "1") },
     [S_LOG_FILE] = { "Advanced", "LogFile", T_ADVANCED, "TROUBLESHOOTING", "Log file",
         "Writes what the game reports to SSX Tricky.log beside this file, for bug reports.",
         BOOL_("1"), NULL, 0, NOP },
@@ -441,6 +452,8 @@ void settings_defaults(Settings *s)
 {
     int i;
     for (i = 0; i < SETTINGS_COUNT; i++) copy_value(s->v[i], k_reg[i].def);
+    s->extra[0] = 0;
+    s->ignored[0] = 0;
 }
 
 int settings_set(Settings *s, int id, const char *value)
@@ -523,10 +536,36 @@ static char *trim(char *a, char *b)    /* [a, b) without surrounding blanks, NUL
     return a;
 }
 
+/* One more ignored line in s->ignored ("Key, Key"; ASCII, "..." once full). */
+static void note_ignored(Settings *s, const char *what)
+{
+    char *d = s->ignored;
+    size_t n = strlen(d), k = strlen(what), i;
+    if (n >= 3 && !strcmp(d + n - 3, "...")) return;
+    if (k > 40) k = 40;
+    if (n + 2 + k + 6 > sizeof s->ignored) {
+        strcpy(d + n, n ? ", ..." : "...");
+        return;
+    }
+    if (n) { memcpy(d + n, ", ", 2); n += 2; }
+    for (i = 0; i < k; i++) d[n + i] = ((unsigned char)what[i] < 0x20 || (unsigned char)what[i] > 0x7E) ? '?' : what[i];
+    d[n + k] = 0;
+}
+
+/* A Key=Value line this version does not know, kept for the next save:
+ * "Section\x01Key=Value\n" in s->extra (dropped when it does not fit). */
+static void keep_line(Settings *s, const char *section, const char *k, const char *v)
+{
+    size_t n = strlen(s->extra);
+    if (!section[0] || !k[0] || strchr(section, '\x01')) return;
+    if (n + strlen(section) + strlen(k) + strlen(v) + 3 >= sizeof s->extra) return;
+    sprintf(s->extra + n, "%s\x01%s=%s\n", section, k, v);
+}
+
 int settings_parse(Settings *s, const char *text, size_t len, int *bad)
 {
     char section[64] = "", *buf, *p, *end;
-    int version = 0, nbad = 0;
+    int version = 0, nbad = 0, line = 0;
 
     settings_defaults(s);
     if (bad) *bad = 0;
@@ -569,8 +608,11 @@ int settings_parse(Settings *s, const char *text, size_t len, int *bad)
 
     while (p < end) {
         char *nl = memchr(p, '\n', (size_t)(end - p)), *line_end = nl ? nl : end, *l, *eq;
+        char where[24];
         l = trim(p, line_end);
         p = nl ? nl + 1 : end;
+        line++;
+        sprintf(where, "line %d", line);
         if (!*l || *l == ';' || *l == '#') continue;
         if (*l == '[') {
             char *rb = strchr(l, ']');
@@ -579,18 +621,26 @@ int settings_parse(Settings *s, const char *text, size_t len, int *bad)
                 snprintf(section, sizeof section, "%s", trim(l + 1, rb));
             } else {
                 nbad++;
+                note_ignored(s, where);
             }
             continue;
         }
         eq = strchr(l, '=');
-        if (!eq) { nbad++; continue; }
+        if (!eq) { nbad++; note_ignored(s, where); continue; }
         {
             char *k = trim(l, eq), *v = eq + 1;
             int id;
             while (*v == ' ' || *v == '\t') v++;
             if (ieq(section, "Meta")) continue;
             id = settings_find(section, k);
-            if (id < 0 || !settings_set(s, id, v)) nbad++;
+            if (id < 0) {                           /* another version's setting: kept */
+                nbad++;
+                note_ignored(s, k[0] ? k : where);
+                keep_line(s, section, k, v);
+            } else if (!settings_set(s, id, v)) {   /* not valid: the default */
+                nbad++;
+                note_ignored(s, k);
+            }
         }
     }
     free(buf);
@@ -733,6 +783,36 @@ static void out_printf(Out *o, const char *fmt, ...)
     if (k > 0) o->n += (size_t)k;
 }
 
+/* Section names, ignoring case: p[0..n) and q[0..m). */
+static int same_name(const char *p, size_t n, const char *q, size_t m)
+{
+    size_t i;
+    if (n != m) return 0;
+    for (i = 0; i < n; i++)
+        if (tolower((unsigned char)p[i]) != tolower((unsigned char)q[i])) return 0;
+    return 1;
+}
+
+static int same_section(const char *p, size_t n, const char *sec)
+{
+    return same_name(p, n, sec, strlen(sec));
+}
+
+/* The kept lines of section `sec` (s->extra), under its header if none yet. */
+static void out_extra(Out *o, const Settings *s, const char *sec, int *wrote_header)
+{
+    const char *p = s->extra;
+    while (*p) {
+        const char *sep = strchr(p, '\x01'), *nl = strchr(p, '\n');
+        if (!sep || !nl || sep > nl) break;
+        if (same_section(p, (size_t)(sep - p), sec)) {
+            if (!*wrote_header) { out_printf(o, "\n[%s]\n", sec); *wrote_header = 1; }
+            out_printf(o, "%.*s\n", (int)(nl - sep - 1), sep + 1);
+        }
+        p = nl + 1;
+    }
+}
+
 /* The comment of one value list: "a, b or c". */
 static void out_values(Out *o, const SettingDef *d)
 {
@@ -777,7 +857,7 @@ size_t settings_format(const Settings *s, char *out, size_t out_sz)
         for (j = i; j < SETTINGS_COUNT; j++) {
             const SettingDef *d = &k_reg[j];
             if (strcmp(d->section, sec)) continue;
-            if ((d->flags & SETTING_HIDDEN) && !strcmp(s->v[j], d->def)) continue;
+            if ((d->flags & (SETTING_HIDDEN | SETTING_PENDING)) && !strcmp(s->v[j], d->def)) continue;
             if (!wrote_header) {
                 out_printf(&o, "\n[%s]\n", sec);
                 if (!strcmp(sec, "Keyboard"))
@@ -795,6 +875,32 @@ size_t settings_format(const Settings *s, char *out, size_t out_sz)
                 out_printf(&o, ". Default: %s.\n", d->def[0] ? d->def : "empty");
             }
             out_printf(&o, "%s=%s\n", d->key, s->v[j]);
+        }
+        out_extra(&o, s, sec, &wrote_header);
+    }
+    /* Kept lines of the sections this version does not have, in the order read. */
+    {
+        const char *p = s->extra;
+        while (*p) {
+            const char *sep = strchr(p, '\x01'), *nl = strchr(p, '\n'), *q;
+            size_t n;
+            int done_already = 0;
+            char sec[64];
+            if (!sep || !nl || sep > nl) break;
+            n = (size_t)(sep - p);
+            for (i = 0; i < SETTINGS_COUNT && !done_already; i++)
+                done_already = same_section(p, n, k_reg[i].section);
+            for (q = s->extra; q < p && !done_already; q = strchr(q, '\n') + 1) {
+                const char *qs = strchr(q, '\x01');      /* a section an earlier line wrote */
+                done_already = qs && same_name(q, (size_t)(qs - q), p, n);
+            }
+            if (!done_already && n < sizeof sec) {
+                int wrote_header = 0;
+                memcpy(sec, p, n);
+                sec[n] = 0;
+                out_extra(&o, s, sec, &wrote_header);
+            }
+            p = nl + 1;
         }
     }
     return o.n;
@@ -870,6 +976,34 @@ static int join(char *out, size_t out_sz, const char *dir, const char *name)
     return snprintf(out, out_sz, "%s%c%s", dir, SEP, name) < (int)out_sz;
 }
 
+int settings_install_root_of(const char *exe_dir, char *out, size_t out_sz)
+{
+    char dir[SETTINGS_VALUE_MAX], parent[SETTINGS_VALUE_MAX], f[SETTINGS_VALUE_MAX + 32], *last;
+    size_t n;
+
+    if (!exe_dir || !exe_dir[0] || snprintf(dir, sizeof dir, "%s", exe_dir) >= (int)sizeof dir) return 0;
+    n = strlen(dir);
+    while (n > 1 && (dir[n - 1] == '\\' || dir[n - 1] == '/') && dir[n - 2] != ':') dir[--n] = 0;
+    last = dir + n;
+    while (last > dir && last[-1] != '\\' && last[-1] != '/') last--;
+    /* bin\ without OpenTricky.exe, below a folder with it: that folder */
+    if (last > dir && ieq(last, "bin") && join(f, sizeof f, dir, SETTINGS_LAUNCHER_EXE) && !u8_file_exists(f)) {
+        size_t p = (size_t)(last - dir) - 1;            /* the separator before "bin" */
+        memcpy(parent, dir, p);
+        parent[p] = 0;
+        if (p && parent[p - 1] == ':') { parent[p] = SEP; parent[p + 1] = 0; }   /* "D:" -> "D:\" */
+        if (p && join(f, sizeof f, parent, SETTINGS_LAUNCHER_EXE) && u8_file_exists(f))
+            return snprintf(out, out_sz, "%s", parent) < (int)out_sz;
+    }
+    return snprintf(out, out_sz, "%s", dir) < (int)out_sz;
+}
+
+int settings_install_root(char *out, size_t out_sz)
+{
+    char exe[SETTINGS_VALUE_MAX];
+    return settings_game_dir(exe, sizeof exe) && settings_install_root_of(exe, out, out_sz);
+}
+
 /* Can a settings file be written in `dir`? An existing file must open for
  * writing (not read-only); otherwise a test file is created and removed. */
 static int dir_writable(const char *dir, const char *file)
@@ -894,7 +1028,7 @@ int settings_locate(const char *game_dir, const char *docs_dir, int for_write, c
     char g[SETTINGS_VALUE_MAX], d[SETTINGS_VALUE_MAX], gf[SETTINGS_VALUE_MAX + 16], df[SETTINGS_VALUE_MAX + 16];
     int have_g, have_d;
 
-    have_g = game_dir ? snprintf(g, sizeof g, "%s", game_dir) < (int)sizeof g : settings_game_dir(g, sizeof g);
+    have_g = game_dir ? snprintf(g, sizeof g, "%s", game_dir) < (int)sizeof g : settings_install_root(g, sizeof g);
     have_d = docs_dir ? snprintf(d, sizeof d, "%s", docs_dir) < (int)sizeof d : settings_docs_dir(d, sizeof d);
     have_g = have_g && g[0] && join(gf, sizeof gf, g, SETTINGS_FILE_NAME);
     have_d = have_d && d[0] && join(df, sizeof df, d, SETTINGS_FILE_NAME);

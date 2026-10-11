@@ -4,7 +4,7 @@
 
 <p align="center">
   <b>The PC port SSX Tricky never got.</b><br>
-  Built from the Xbox game, with the original's features restored, and everything a modern PC release would have: today's controllers, new visual options, ultrawide, high frame rates and a real launcher.
+  Built from the original game, with its features restored, and everything a modern PC release would have: today's controllers, new visual options, ultrawide, high frame rates and a real launcher.
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@
 ## Contents
 
 - [What is this?](#what-is-this)
-- [What's new in 0.1.1](#whats-new-in-011)
+- [What's new in 0.1.2](#whats-new-in-012)
 - [Install and play](#install-and-play)
 - [Controls and settings](#controls-and-settings)
 - [Known issues](#known-issues)
@@ -45,23 +45,24 @@
 
 ## What is this?
 
-OpenTricky runs *SSX Tricky* (Xbox, 2001) natively on Windows. It is not an emulator: the game's own Xbox code is translated to C with
+OpenTricky runs *SSX Tricky* (2001) natively on Windows. It is not an emulator: the game's own Xbox code is translated to C with
 [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) and compiled into an ordinary Windows program, and the Xbox's graphics, sound and input chips
 are reimplemented on Direct3D 11, XAudio2 and XInput. OpenTricky continues [**SSX Tricky PC**](https://github.com/MatiasRiveraC/SSX-Tricky-PC) by MatiasRiveraC.
 
 The goals:
 
-1. **Feature complete.** Built from the Xbox version, with the console's features restored: fog, lens flares, colours, 5.1 sound.
+1. **Feature complete.** Built from the original game, with all its features restored: fog, lens flares, colours, 5.1 sound.
 2. **A modern PC release**: modern controllers and button styles (Xbox, PlayStation, PS2 original), the original PS2 controls with all 15 grabs, full keyboard and controller remapping, any resolution, ultrawide, high frame rates, all set up in one launcher.
 3. **New options on top**: smoother edges, soft shadows, longer draw distance, optional HD textures. The *Original Xbox* preset turns them all off at once.
 
-## What's new in 0.1.1
+## What's new in 0.1.2
 
-- **A new launcher**, `OpenTricky.exe`: settings in six tabs with presets, full keyboard and controller remapping, and updates it installs only if you say so.
-- **The original PS2 controls**: all 15 grabs on the shoulder buttons and triggers, with *Xbox modern*, *PlayStation modern* or *PS2 original* buttons.
-- **Wide screens done properly**: the race HUD keeps its proportions, and the menus are shown as the Xbox drew them, in 4:3.
-- **More stable**: a rare save loss and rare freezes and crashes are fixed, and your previous save is kept as a backup.
-- **5.1 surround**, **VSync**, smoother high frame rates and less overhead in the busiest scenes.
+- **Closer to the original game**: the "melting" snow is fixed (it was a port bug), the Showoff snowflakes can be collected again, and the crowd, the ambience and the rider's voice are back at the end of a race.
+- **Steadier races**: no more stretched frame at the race start, and long sessions no longer lose the world after a few events in a row.
+- **The HUD at any frame rate**: the race HUD and its menus run at the right speed above 60 FPS.
+- **Save profile**: your own save, or a separate save with everything unlocked. Your own save is never touched.
+- **A tidier install folder**: the game now lives in `bin\`, and the launcher tells you when a setting does nothing on your screen.
+- **A safer launcher**: it can now check a release's signature (it will be used from a later, signed release); crash reports no longer keep any folder name; *Restore* asks before it does anything.
 
 Everything else: the [release notes](https://github.com/GiZcesi/OpenTricky/releases) and [CHANGELOG.md](CHANGELOG.md).
 
@@ -70,9 +71,13 @@ Everything else: the [release notes](https://github.com/GiZcesi/OpenTricky/relea
 **You need** Windows 10 or 11 (64-bit), a Direct3D 11 graphics card, and a disc image (`.iso` or `.xiso`) of your own ***SSX Tricky* Xbox disc, USA release**
 (the PS2, GameCube, PAL and Japanese versions won't work). A controller is optional: Xbox-style (XInput) controllers and the keyboard work.
 
-1. Download `OpenTricky-<version>-win64.zip` from [**Releases**](https://github.com/GiZcesi/OpenTricky/releases) and extract it into a folder of its own.
+1. Download `OpenTricky-<version>-win64.zip` from [**Releases**](https://github.com/GiZcesi/OpenTricky/releases) and extract it into a new, empty folder.
 2. Start **`OpenTricky.exe`**, the launcher, and choose your disc image: the launcher checks it and remembers it.
 3. Pick a preset or your own settings, then press **PLAY**.
+
+The game itself is `bin\SSX Tricky.exe`: it also starts the game straight away, with the same settings.
+
+**Coming from 0.1.1:** install 0.1.2 fresh, in a new folder. Saves in `Documents\My Games\SSX Tricky\Saves` stay where they are; if your saves were inside the old folder (with `portable.txt`), copy its `Saves` folder and `portable.txt` into the new one. Don't copy `settings.ini`, choose your disc image again, then delete the old folder. Shortcuts to the old `SSX Tricky.exe` need to be made again.
 
 > [!NOTE]
 > Windows SmartScreen may warn you because the program isn't code-signed. If you trust the download, choose **More info → Run anyway**.
@@ -104,12 +109,10 @@ The main ones, most serious first. The full list is on [opentricky.com/known-iss
 
 | Problem | What to do for now |
 |---|---|
-| **At the start of a race, the picture can briefly look doubled or shifted** with some settings. We're looking into it. | Tell us your settings (Discord or an issue). |
-| **During the opening logo video, the first press of Start is sometimes ignored** (Enter on the keyboard). | Press it again. If it still doesn't react, let the video play to the end, or restart the game. |
 | **Frame rate drops when riders collide, and Snowdream runs slower than other tracks.** | No workaround yet. |
-| **Above 60 FPS, the controls answer one game step later** (about 17 ms). | Set *Frame rate limit* to *60* for the Xbox's exact timing. |
+| **Above 60 FPS, the controls answer one game step later** (about 17 ms). | Set *Frame rate limit* to *60* for the original game's exact timing. |
 | **Only Xbox-style (XInput) controllers are supported natively.** | Use Steam Input or DS4Windows, and choose *PlayStation modern* or *PS2 original* in *Button style*. |
-| **Steam Deck, Linux (Proton) and real 5.1 speakers are not tested yet.** | Reports are welcome. |
+| **Steam Deck and Linux (Proton): 0.1.2 should start there now, but no player has confirmed it yet.** Real 5.1 speakers aren't tested either. | Reports are welcome. |
 
 ## FAQ
 

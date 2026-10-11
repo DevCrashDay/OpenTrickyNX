@@ -7,7 +7,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <vector>
+
+#ifndef OT_TEXT_GAMMA_DEFAULT
+#define OT_TEXT_GAMMA_DEFAULT 1.4f
+#endif
 
 /* ── Textures ──────────────────────────────────────────────────────── */
 
@@ -20,6 +26,38 @@ static Rml::TextureHandle upload(RenderInterface_GL3 *ri, OtPixels &p, Rml::Vect
     }
     dim = { p.w, p.h };
     return ri->RenderInterface_GL3::GenerateTexture({ p.rgba.data(), p.rgba.size() }, dim);
+}
+
+/* Text: FreeType's glyph coverage is blended in the screen's (sRGB) space,
+ * where light text on the launcher's dark panels loses its edge pixels and
+ * looks thin and stair-stepped. The coverage of the glyph pictures is raised
+ * by a gamma curve (alpha^(1/g)), as the system text renderers do: smoother
+ * edges, the same glyph shapes, no blur and no sharpening.
+ * OT_TEXT_GAMMA=<g> overrides the default 1.4 (1 = FreeType's coverage as is). */
+static float text_gamma()
+{
+    static float g = -1;
+    if (g < 0) {
+        const char *e = SDL_getenv("OT_TEXT_GAMMA");
+        g = e && *e ? (float)atof(e) : OT_TEXT_GAMMA_DEFAULT;
+        if (!(g >= 0.5f && g <= 3.0f)) g = 1.0f;
+    }
+    return g;
+}
+
+Rml::TextureHandle OtRenderInterface::GenerateTexture(Rml::Span<const Rml::byte> source, Rml::Vector2i dimensions)
+{
+    /* A glyph picture: premultiplied white, every pixel (a, a, a, a). */
+    float g = text_gamma();
+    bool glyphs = g != 1.0f && source.size() >= 4;
+    for (size_t i = 0; glyphs && i + 3 < source.size(); i += 4)
+        glyphs = source[i] == source[i + 3] && source[i + 1] == source[i + 3] && source[i + 2] == source[i + 3];
+    if (!glyphs) return RenderInterface_GL3::GenerateTexture(source, dimensions);
+    unsigned char lut[256];
+    for (int a = 0; a < 256; a++) lut[a] = (unsigned char)std::lround(255.0 * std::pow(a / 255.0, 1.0 / g));
+    std::vector<Rml::byte> px(source.begin(), source.end());
+    for (Rml::byte &b : px) b = lut[b];
+    return RenderInterface_GL3::GenerateTexture({ px.data(), px.size() }, dimensions);
 }
 
 Rml::TextureHandle OtRenderInterface::LoadTexture(Rml::Vector2i &dimensions, const Rml::String &source)

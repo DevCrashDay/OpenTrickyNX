@@ -1049,6 +1049,15 @@ static BOOL xbox_probe_layout_free(uintptr_t base, size_t memory_size)
     return TRUE;
 }
 
+/* The GPU MMIO aperture slot alone (base + 0xFD000000, 48 MB): without it
+ * there is no pump thread and the title cannot get past D3D init. */
+static BOOL xbox_probe_gpu_aperture_free(uintptr_t base)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery((LPCVOID)(base + 0xFD000000u), &mbi, sizeof(mbi)) == 0) return FALSE;
+    return mbi.State == MEM_FREE && mbi.RegionSize >= 0x03000000u;
+}
+
 BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
 {
     DWORD old_protect;
@@ -1204,11 +1213,56 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
             g_memory_base = MapViewOfFileEx(
                 g_mapping_handle, FILE_MAP_ALL_ACCESS, 0, 0, g_memory_size, NULL
             );
+
+            /* Check that the OS's choice leaves room for the GPU aperture.
+             * Windows 10 hands out a low base whose aperture slot (above
+             * 4 GB) is free -- only mirror 14 loses 64 KB to the system pages
+             * at 0x7FFE0000, as it always has -- and Windows 11 a base above
+             * 4 GB with the whole window free, so this accepts both and
+             * nothing changes there. Wine serves an unhinted request from its
+             * low reserved area (seen live: 0x01730000), where the aperture
+             * slot is already occupied; the aperture then fails to map, no
+             * pump thread is created and the title waits forever on its first
+             * fence. Retry at fixed bases above the (non-ASLR) image, through
+             * the full probe, before giving up.
+             * Test hook (XBOX_TEST_REJECT_OS_BASE): 1 treats the OS's choice
+             * as rejected, to run this path on Windows; 2 also skips every
+             * fixed base, to run the "no base" exit. Off unless set. */
+            const char *rej = getenv("XBOX_TEST_REJECT_OS_BASE");
+            int test_reject = rej ? atoi(rej) : 0;
+            if (g_memory_base && (test_reject >= 1 ||
+                !xbox_probe_gpu_aperture_free((uintptr_t)g_memory_base))) {
+                static const uintptr_t high_bases[] = {
+                    0x200000000ull, 0x300000000ull, 0x400000000ull
+                };
+                fprintf(stderr, "  Base 0x%p chosen by the OS: rejected -- the GPU MMIO "
+                        "aperture would collide; trying fixed bases above 4 GB\n",
+                        g_memory_base);
+                UnmapViewOfFile(g_memory_base);
+                g_memory_base = NULL;
+                for (int i = 0; i < (int)(sizeof(high_bases) / sizeof(high_bases[0])); i++) {
+                    uintptr_t hint_addr = high_bases[i];
+                    const char *what = "skipped (slot or aperture occupied)";
+                    if (test_reject < 2 && xbox_probe_layout_free(hint_addr, g_memory_size)) {
+                        g_memory_base = MapViewOfFileEx(g_mapping_handle, FILE_MAP_ALL_ACCESS,
+                                                        0, 0, g_memory_size, (LPVOID)hint_addr);
+                        if (g_memory_base && (uintptr_t)g_memory_base != hint_addr) {
+                            UnmapViewOfFile(g_memory_base);
+                            g_memory_base = NULL;
+                        }
+                        what = g_memory_base ? "used" : "map failed";
+                    }
+                    fprintf(stderr, "  Base candidate 0x%p: %s\n", (void *)hint_addr, what);
+                    if (g_memory_base) break;
+                }
+            }
         }
     }
 
     if (!g_memory_base) {
-        fprintf(stderr, "xbox_MemoryLayoutInit: failed to map base view (%zu KB)\n",
+        fprintf(stderr, "xbox_MemoryLayoutInit: failed to map base view (%zu KB) -- no base "
+                "address can host the Xbox RAM window; set XBOX_TEST_BASE=<hex> (e.g. "
+                "200000000) to try one\n",
                 g_memory_size / 1024);
         CloseHandle(g_mapping_handle);
         g_mapping_handle = NULL;
@@ -1771,6 +1825,15 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
             fprintf(stderr, "  GPU MMIO probe range: FAILED to map at %p (error %lu) -- "
                     "direct register probes in this range will still fault\n",
                     gpu_mmio_base, GetLastError());
+        }
+        /* Without the aperture there is no pump thread, and without the pump
+         * nobody retires the title's GPU fences: it would spin forever before
+         * even opening a window. Stop here with a message instead. */
+        if (!g_pfifo_pump_thread) {
+            fprintf(stderr, "xbox_MemoryLayoutInit: cannot run without the GPU MMIO window and "
+                    "its pump thread (base 0x%p); on Wine/Proton try "
+                    "XBOX_TEST_BASE=200000000 (hex)\n", g_memory_base);
+            return FALSE;
         }
     }
 

@@ -672,6 +672,8 @@ static void bridge_PsCreateSystemThreadEx(void)
  * referenced by tagged 32-bit tokens. */
 static void   bridge_write_handle(uint32_t handle_va, HANDLE h);
 static HANDLE bridge_take_handle(uint32_t token);
+int xbox_iso_handle_release(HANDLE Handle);   /* kernel_file.c */
+int xbox_iso_handles_in_use(void);            /* kernel_file.c */
 
 static void hpath_drop(uint32_t tok);   /* handle -> path map, below */
 
@@ -688,7 +690,10 @@ static void bridge_NtClose(void)
     /* Close real handles but skip fake/synthetic ones */
     if (raw_handle && raw_handle != 0xDEAD0001u && raw_handle != 0xBEEF0010u) {
         HANDLE h = bridge_take_handle(raw_handle);
-        if (h && h != INVALID_HANDLE_VALUE) {
+        if (h && h != INVALID_HANDLE_VALUE && xbox_iso_handle_release(h)) {
+            /* A file on the game disc: a virtual handle, not an OS one --
+             * its slot is freed, CloseHandle must not see it. */
+        } else if (h && h != INVALID_HANDLE_VALUE) {
             /* Drop the directory scan bound to this handle before Windows
              * hands the value out again. xbox_NtClose does this, but the
              * translated code closes through here, so a scan the title stopped
@@ -2281,7 +2286,8 @@ static NTSTATUS bridge_create_file_impl(
     st = xbox_NtCreateFile(&h, access, &oa, &ios, NULL,
                            file_attrs, share, disposition, options);
 
-    fprintf(stderr, "  [FILE] create/open: path=\"%s\" -> status=0x%08X\n", name.Buffer, (uint32_t)st);
+    fprintf(stderr, "  [FILE] create/open: path=\"%s\" -> status=0x%08X iso=%d\n", name.Buffer, (uint32_t)st,
+            xbox_iso_handles_in_use());
     fflush(stderr);
 
     if (NT_SUCCESS(st)) {

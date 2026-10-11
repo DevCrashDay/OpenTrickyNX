@@ -48,6 +48,14 @@ void crashreport_set_output(int player, const char *log_path, int output_redirec
  * watchdog (and the XBOX_CRASH_TEST thread, when set). */
 void crashreport_game_start(void);
 
+/* A folder of the player that is not the game's or the profile's (the save
+ * folder): blanked in the minidumps like those. UTF-8. */
+void crashreport_private_folder(const char *utf8);
+
+/* The folder of a file named in the ANSI code page (the disc image), blanked
+ * the same way. */
+void crashreport_private_file_acp(const char *path);
+
 /* From the unhandled exception filter, on the faulting thread. details is a
  * short text block (guest registers...) added to report.txt. Returns 1 and
  * the folder (for the message) when a report was written. */

@@ -15,6 +15,7 @@ if(WIN32)
         d3d8_statecache.c
         d3d8_combiners.c
         d3d8_nv2a.c
+        d3d8_shcache.c
         d3d8_nv2a_vsh.c
         d3d8_vsh.c
     )
@@ -36,4 +37,16 @@ if(MSVC)
     target_compile_options(xbox_d3d8 PRIVATE /W4 /O2)
 else()
     target_compile_options(xbox_d3d8 PRIVATE -Wall -Wextra -Wno-unused-parameter -O2)
+endif()
+
+# Host test of the shader disk cache (no game, no D3D):
+#   cmake -DXBOX_BUILD_TESTS=ON ... ; cmake --build ... --target shcache_test
+option(XBOX_BUILD_TESTS "Build the host tests of the D3D layer (shcache_test)" OFF)
+if(XBOX_BUILD_TESTS)
+    add_executable(shcache_test tests/shcache_test.c d3d8_shcache.c)
+    target_include_directories(shcache_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    if(NOT WIN32)
+        find_package(Threads REQUIRED)
+        target_link_libraries(shcache_test PRIVATE Threads::Threads)
+    endif()
 endif()

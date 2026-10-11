@@ -728,6 +728,32 @@ static void hud_tag_seen(uint32_t p)
     }
 }
 
+/* 2D tags never reach the 3D (XBOX_FIX_HUD_3D, default 1; 0 = as before).
+ * A HUD, box or panel tag holds until the next tag, and the title draws the
+ * 2D of an image (groups >= 7) right before its flip, then the 3D of the
+ * next image: the first draws of that 3D (the main view's own draws ahead
+ * of its first record, the course's terrain among them, so before any
+ * GROUP marker) came while the last 2D element's tag still held, and were
+ * scaled with it (proportional race HUD, panels, the 16:9 frame). So the 2D
+ * tags are dropped at each image boundary (hud_image_done), and a draw
+ * whose first vertex has a perspective w is never taken for a 2D element
+ * (draw_is_perspective). Pump thread only. */
+static int fix_hud3d(void)
+{
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("XBOX_FIX_HUD_3D"); v = !(e && e[0] == '0'); }
+    return v;
+}
+
+/* Just before an image is presented: its 2D tags end with it. */
+static void hud_image_done(void)
+{
+    if (!fix_hud3d()) return;
+    g_hud.on = 0;
+    g_box.on = 0;
+    g_panel.on = 0;
+}
+
 /* Pass phases (fork).
  *
  * With XBOX_PASS_TAGS=emit the title's own hooks (port/src/pass_tags.c) write
@@ -2972,6 +2998,15 @@ static void cullstat_draw(const uint32_t *indices, uint32_t start, uint32_t coun
     g_cs.v[g_cull_grp][cls] += count;
 }
 
+/* XBOX_FIX_HUD_3D: the first vertex has a perspective w -- 3D, never a 2D
+ * element, whatever tag holds (2D is drawn with w = 1). */
+static int draw_is_perspective(const uint32_t *indices, uint32_t start, uint32_t count)
+{
+    ProgVertex v;
+    if (!count || !vsh_vertex(indices ? indices[0] : start, &v, NULL) || v.rhw == 0.0f) return 0;
+    return fabsf(1.0f / v.rhw - 1.0f) > 1e-3f;
+}
+
 static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count)
 {
     static ProgVertex *vb = NULL, *tb = NULL;
@@ -3682,7 +3717,8 @@ static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count
             {
                 /* Race HUD element in its own proportions. */
                 float kx, ax, ky, ay;
-                if (hud_element(&kx, &ax, &ky, &ay)) {
+                if (hud_element(&kx, &ax, &ky, &ay) &&
+                    !(fix_hud3d() && draw_is_perspective(indices, start, count))) {
                     if (gpu) { gd.hud_kx = kx; gd.hud_ax = ax; gd.hud_ky = ky; gd.hud_ay = ay; }
                     else if (kx < 0.0f && prim == D3DPT_TRIANGLELIST && !points)
                         g_panel.moved += (unsigned long long)panel_snap_list(tb, n, -kx, ax, ky, ay);
@@ -4618,6 +4654,7 @@ int pgraph_d3d11_method(int subchannel, uint32_t method, uint32_t param)
                 g_pg.frame_no++;
                 pass_phase_image_done();
                 box_image_done();
+                hud_image_done();
                 d3d8_PresentFrame();
             }
         }
@@ -4681,6 +4718,7 @@ int pgraph_d3d11_method(int subchannel, uint32_t method, uint32_t param)
             g_pg.frame_no++;
             pass_phase_image_done();
             box_image_done();
+            hud_image_done();
             d3d8_PresentFrame();
         }
         if (dev) {

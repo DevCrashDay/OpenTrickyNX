@@ -7,7 +7,7 @@
 #   <build dir>/OpenTricky.exe [--iso <disc image>] [--track <0-9>] [--page home|settings]
 #
 # Dependencies are built from the sources in port/third_party (no system
-# package is used): SDL3, FreeType (no zlib/png/harfbuzz/brotli), RmlUi.
+# package is used): SDL3, FreeType (no zlib/png/harfbuzz/brotli), RmlUi, miniz.
 cmake_minimum_required(VERSION 3.20)
 project(OpenTricky C CXX RC)
 
@@ -59,6 +59,13 @@ set(RMLUI_PRECOMPILED_HEADERS OFF CACHE BOOL "" FORCE)
 set(RMLUI_LUA_BINDINGS OFF CACHE BOOL "" FORCE)
 add_subdirectory(${OT_THIRD_PARTY}/rmlui ${CMAKE_BINARY_DIR}/rmlui EXCLUDE_FROM_ALL)
 
+# ── miniz (static): the zip reader and inflate of the updates only (no
+# deflate, so no zip writing either) ──
+add_library(ot_miniz STATIC ${OT_THIRD_PARTY}/miniz/miniz.c)
+target_include_directories(ot_miniz PUBLIC ${OT_THIRD_PARTY}/miniz)
+target_compile_definitions(ot_miniz PUBLIC MINIZ_NO_STDIO MINIZ_NO_TIME MINIZ_NO_DEFLATE_APIS
+    MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
+
 # ── The launcher's disc assets and themes (port/launcher, C99) ──
 add_library(ot_launcher_assets STATIC
     ../ot_image.c
@@ -66,6 +73,14 @@ add_library(ot_launcher_assets STATIC
     ../ot_theme.c
 )
 target_include_directories(ot_launcher_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+# ── The release signature: Ed25519 (Monocypher 4.0.2, C99) ──
+add_library(ot_sign STATIC
+    ot_sign.c
+    ${OT_THIRD_PARTY}/monocypher/monocypher.c
+    ${OT_THIRD_PARTY}/monocypher/optional/monocypher-ed25519.c
+)
+target_include_directories(ot_sign PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${OT_THIRD_PARTY}/monocypher)
 
 # ── OpenTricky.exe ──
 set(RMLUI_BACKENDS ${OT_THIRD_PARTY}/rmlui/Backends)
@@ -87,15 +102,30 @@ target_include_directories(OpenTricky PRIVATE ${RMLUI_BACKENDS} ${CMAKE_CURRENT_
 set_source_files_properties(OpenTricky.rc PROPERTIES
     OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/OpenTricky.ico;${OT_SRC}/opentricky_version.rc;${OT_SRC}/version_info.rc;${OT_SRC}/version.h")
 target_compile_definitions(OpenTricky PRIVATE RMLUI_SDL_VERSION_MAJOR=3)
+# Smoother edges of the shapes (slanted PLAY and title boxes, rounded corners,
+# borders): 4 samples instead of the GL3 renderer's 2.
+target_compile_definitions(OpenTricky PRIVATE RMLUI_NUM_MSAA_SAMPLES=4)
 # A release build: the version without "-dev" (port/src/version.h), set by the
 # release tools only.
 option(OT_RELEASE "Release build (version without -dev)" OFF)
 if(OT_RELEASE)
     target_compile_definitions(OpenTricky PRIVATE OT_RELEASE=1)
 endif()
-target_link_libraries(OpenTricky PRIVATE ot_launcher_assets RmlUi::Core SDL3::SDL3-static shell32 ole32 uuid psapi winhttp)
+target_link_libraries(OpenTricky PRIVATE ot_launcher_assets ot_miniz ot_sign RmlUi::Core SDL3::SDL3-static shell32 ole32 uuid psapi winhttp)
 if(MINGW)
     target_link_options(OpenTricky PRIVATE -static -static-libgcc -static-libstdc++ -s)
+endif()
+
+# Host test of the zip reader of the updates (port/launcher/tests), off by
+# default: -DOT_BUILD_TESTS=ON, then the ot_unzip_test target.
+option(OT_BUILD_TESTS "Build the launcher's host tests (ot_unzip_test)" OFF)
+if(OT_BUILD_TESTS)
+    add_executable(ot_unzip_test ../tests/unzip_test.cpp ot_install.cpp ot_update.cpp ot_util.cpp)
+    target_include_directories(ot_unzip_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(ot_unzip_test PRIVATE ot_miniz ot_sign SDL3::SDL3-static shell32 ole32 uuid psapi winhttp)
+    if(MINGW)
+        target_link_options(ot_unzip_test PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
 endif()
 
 # The installed version's "What's new" block (whatsnew.txt), built into the
@@ -108,7 +138,7 @@ file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/ot_whatsnew.inc
 " @ONLY)
 
 # THIRD-PARTY-LICENSES.txt beside the exe: our summary, then each licence in
-# full (RmlUi MIT, SDL zlib, FreeType FTL, the fonts' OFL).
+# full (RmlUi MIT, SDL zlib, FreeType FTL, miniz MIT, the fonts' OFL).
 set(OT_LICENCES "")
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/licenses-head.txt OT_PART)
 string(APPEND OT_LICENCES "${OT_PART}")
@@ -116,6 +146,8 @@ foreach(part
         "RmlUi (MIT)|${OT_THIRD_PARTY}/rmlui/LICENSE.txt"
         "SDL (zlib)|${OT_THIRD_PARTY}/sdl3/LICENSE.txt"
         "FreeType (FreeType License, FTL)|${OT_THIRD_PARTY}/freetype/docs/FTL.TXT"
+        "miniz (MIT)|${OT_THIRD_PARTY}/miniz/LICENSE"
+        "Monocypher (BSD 2-clause, or CC0)|${OT_THIRD_PARTY}/monocypher/LICENCE.md"
         "Inter (SIL Open Font License 1.1)|${CMAKE_CURRENT_SOURCE_DIR}/ui/fonts/OFL-Inter.txt"
         "Bebas Neue (SIL Open Font License 1.1)|${CMAKE_CURRENT_SOURCE_DIR}/ui/fonts/OFL-BebasNeue.txt"
         "Exo 2 (SIL Open Font License 1.1)|${CMAKE_CURRENT_SOURCE_DIR}/ui/fonts/OFL-Exo2.txt")

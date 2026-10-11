@@ -15,6 +15,7 @@
 #include "../kernel/xbox_perf.h"
 #include "d3d8_internal.h"
 #include "d3d8_gpuprof.h"
+#include "d3d8_shcache.h"
 #include <d3dcompiler.h>
 #include <intrin.h>
 #include <math.h>
@@ -126,6 +127,69 @@ static double nv_now_ms(void)
     if (!f.QuadPart) QueryPerformanceFrequency(&f);
     QueryPerformanceCounter(&q);
     return (double)q.QuadPart * 1000.0 / (double)f.QuadPart;
+}
+
+/* XBOX_SHADER_CACHE, default 1; =0 previous path: the bytecode of
+ * the pump's two compiles (combiner pixel shaders, vertex programs) is kept
+ * on disk (d3d8_shcache.c) and read back by a later session instead of
+ * calling D3DCompile. The compiler build is part of the key: the version of
+ * d3dcompiler_47.dll loaded (its PE time stamp and image size). */
+#ifndef D3DCOMPILER_DLL_A
+#define D3DCOMPILER_DLL_A "d3dcompiler_47.dll"
+#endif
+volatile long g_nv_shc_hits = 0;
+static uint64_t nv_compiler_id(void)
+{
+    uint64_t id = (uint64_t)D3D_COMPILER_VERSION << 56;
+    HMODULE m = GetModuleHandleA(D3DCOMPILER_DLL_A);
+    if (m) {
+        const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)m;
+        const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)((const char *)m + dos->e_lfanew);
+        id ^= (uint64_t)nt->FileHeader.TimeDateStamp ^ ((uint64_t)nt->OptionalHeader.SizeOfImage << 32);
+    }
+    return id;
+}
+
+static int nv_shc_on(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = shc_env_on();
+        if (on) on = shc_open(NULL, nv_compiler_id(), 0, 1);
+        fprintf(stderr, "[SHC] XBOX_SHADER_CACHE=%d\n", on);
+    }
+    return on;
+}
+
+/* D3DCompile through the cache; *hit = 1 when the bytecode came from it. */
+static HRESULT nv_compile(const char *src, SIZE_T len, const char *name, const char *profile,
+                          UINT flags, ID3DBlob **code, ID3DBlob **err, int *hit)
+{
+    ShcId id;
+    void *bin;
+    size_t n = 0;
+    HRESULT hr;
+
+    *hit = 0;
+    if (!nv_shc_on())
+        return D3DCompile(src, len, name, NULL, NULL, "main", profile, flags, 0, code, err);
+    id = shc_id(src, (size_t)len, name, profile, "main", flags);
+    bin = shc_get(id, &n);
+    if (bin) {
+        hr = D3DCreateBlob(n, code);
+        if (SUCCEEDED(hr)) {
+            memcpy(ID3D10Blob_GetBufferPointer(*code), bin, n);
+            shc_free(bin);
+            *hit = 1;
+            g_nv_shc_hits++;
+            return hr;
+        }
+        shc_free(bin);
+    }
+    hr = D3DCompile(src, len, name, NULL, NULL, "main", profile, flags, 0, code, err);
+    if (SUCCEEDED(hr) && *code)
+        shc_put(id, ID3D10Blob_GetBufferPointer(*code), ID3D10Blob_GetBufferSize(*code));
+    return hr;
 }
 
 /* XBOX_FIX_PUMP_CACHE: exact index from a 64-bit key to a
@@ -240,10 +304,13 @@ int d3d8_nv2a_add_ps(unsigned long long key, const char *hlsl, int len)
     if (!dev || g_ps_count >= NV_PS_CACHE) return 0;
     {
         double t0 = nv_now_ms();
-        hr = D3DCompile(hlsl, (SIZE_T)len, "ps_nv2a", NULL, NULL, "main", "ps_5_0",
-                        D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &err);
-        g_nv_compiles++;
-        if (g_perf_on) perf_count(PC_COMPILE, 1);
+        int hit;
+        hr = nv_compile(hlsl, (SIZE_T)len, "ps_nv2a", "ps_5_0",
+                        D3DCOMPILE_OPTIMIZATION_LEVEL3, &blob, &err, &hit);
+        if (!hit) {
+            g_nv_compiles++;
+            if (g_perf_on) perf_count(PC_COMPILE, 1);
+        }
         g_nv_compile_ms += nv_now_ms() - t0;
     }
     if (FAILED(hr)) {
@@ -548,10 +615,13 @@ static int vsh_lookup(const Nv2aVshDraw *d, const uint8_t kind[16])
     /* IEEE strictness keeps the isnan/isfinite tests the CPU path relies on. */
     {
         double t0 = nv_now_ms();
-        hr = D3DCompile(src, (SIZE_T)len, "vs_nv2a_prog", NULL, NULL, "main", "vs_5_0",
-                        D3DCOMPILE_IEEE_STRICTNESS, 0, &code, &err);
-        g_nv_compiles++;
-        if (g_perf_on) perf_count(PC_COMPILE, 1);
+        int hit;
+        hr = nv_compile(src, (SIZE_T)len, "vs_nv2a_prog", "vs_5_0",
+                        D3DCOMPILE_IEEE_STRICTNESS, &code, &err, &hit);
+        if (!hit) {
+            g_nv_compiles++;
+            if (g_perf_on) perf_count(PC_COMPILE, 1);
+        }
         g_nv_compile_ms += nv_now_ms() - t0;
     }
     if (FAILED(hr)) {

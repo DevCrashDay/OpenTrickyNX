@@ -28,7 +28,6 @@
             <div class="note">{{conf_swap}}</div>
             <div class="btns">
                 <span class="mbtn pri" id="swap" data-event-click="dlg('swap')">Swap</span>
-                <span class="mbtn" id="both" data-event-click="dlg('both')">{{conf_both}}</span>
                 <span class="mbtn ghost" id="conf-cancel" data-event-click="dlg('conf_cancel')">Cancel</span>
             </div>
         </div>
@@ -58,7 +57,19 @@
             </div>
         </div>
 
+        <div class="box sec" data-if="modal == 'restore_ask'">
+            <div class="kick">UPDATES</div>
+            <div class="dh">RESTORE v{{restore_version}}?</div>
+            <p>Puts back v{{restore_version}}, the version installed before the last update. The launcher restarts.
+               Your settings, saves, disc image and HD pack stay as they are.</p>
+            <div class="btns">
+                <span class="mbtn pri" id="restore-ok" data-event-click="dlg('restore')">Restore</span>
+                <span class="mbtn ghost" id="restore-cancel" data-event-click="dlg('close')">Cancel</span>
+            </div>
+        </div>
+
         <div class="box sec" data-if="modal == 'notice'">
+            <div class="kick">{{notice_kick}}</div>
             <div class="dh">{{notice_head}}</div>
             <p>{{notice_text}}</p>
             <div class="btns">

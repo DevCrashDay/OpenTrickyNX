@@ -1,7 +1,7 @@
 /*
  * hostui.c -- the game window's own keys.
  *
- *   F12        screenshot (Screenshots\ beside the game)
+ *   F12        screenshot (Screenshots\ in the install root, beside OpenTricky.exe)
  *   F11        fullscreen on/off (Alt+Enter too, handled by the runtime)
  *   Alt+F4     exit (Windows)
  *
@@ -34,20 +34,11 @@ void d3d8_HostSetFullscreen(int on);
 int  d3d8_HostIsFullscreen(void);
 void d3d8_RequestScreenshot(const wchar_t *path);
 
-static void exe_dir_w(WCHAR *out, size_t n)
-{
-    DWORD k = GetModuleFileNameW(NULL, out, (DWORD)n);
-    WCHAR *slash;
-    if (k == 0 || k >= n) { out[0] = 0; return; }
-    slash = wcsrchr(out, L'\\');
-    if (slash) *slash = 0;
-}
-
 static void take_screenshot(void)
 {
     WCHAR dir[MAX_PATH], path[MAX_PATH];
     SYSTEMTIME t;
-    exe_dir_w(dir, MAX_PATH);
+    launcher_install_root_w(dir, MAX_PATH);
     wcsncat(dir, L"\\Screenshots", MAX_PATH - wcslen(dir) - 1);
     CreateDirectoryW(dir, NULL);
     GetLocalTime(&t);

@@ -48,6 +48,9 @@ void controls_defaults(ControlMap *m);
  * one per control in the order above; a key name not known is None. */
 void controls_from_settings(ControlMap *m, const struct Settings *s);
 void controls_to_settings(const ControlMap *m, struct Settings *s);
+/* Cross and Start without a keyboard key get their default one (Space,
+ * Enter) back if it is free; one line in the log. */
+void controls_keep_essential(ControlMap *m);
 
 /* The live mapping the game reads (set once at start, and by the dialog). */
 void controls_set_current(const ControlMap *m);

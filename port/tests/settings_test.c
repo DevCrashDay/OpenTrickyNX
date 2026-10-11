@@ -132,8 +132,37 @@ static void test_defaults_presets(void)
     CHECK(settings_get_bool(&A, S_SAVE_BACKUP));
     CHECK(settings_get_bool(&A, S_SMOOTH_MOTION));
     CHECK(settings_def(S_SMOOTH_MOTION)->flags & SETTING_HIDDEN);
+    /* the experimental leg smoothing: shown, PC, on by default (Original Xbox preset: off) */
+    CHECK(settings_get_bool(&A, S_SMOOTH_LEGS));
+    CHECK_STR(settings_get(&A, S_SPEAKERS), "stereo");
+    CHECK(!(settings_def(S_SMOOTH_LEGS)->flags & SETTING_HIDDEN));
+    CHECK(settings_def(S_SMOOTH_LEGS)->flags & SETTING_PC);
+    CHECK(settings_def(S_SMOOTH_LEGS)->tab == SETTINGS_TAB_ADVANCED);
+    {
+        int p;
+        for (p = 0; p < SETTINGS_PRESET_COUNT; p++) CHECK_STR(settings_def(S_SMOOTH_LEGS)->preset[p], p == 0 ? "0" : "1");
+    }
     CHECK(settings_find("Display", "AntiAliasing") < 0 && settings_find("Graphics", "MSAA") < 0);   /* MSAA removed */
     CHECK_STR(settings_get(&A, S_MENUS), "4:3");
+    /* Save profile: My save by default, shown in GAME, the player's choice (no preset) */
+    CHECK_STR(settings_get(&A, S_SAVE_PROFILE), "mine");
+    CHECK(settings_find("Game", "SaveProfile") == S_SAVE_PROFILE);
+    CHECK(settings_def(S_SAVE_PROFILE)->tab == SETTINGS_TAB_GAME);
+    CHECK(!(settings_def(S_SAVE_PROFILE)->flags & (SETTING_HIDDEN | SETTING_PC | SETTING_PENDING)));
+    CHECK_STR(settings_def(S_SAVE_PROFILE)->env, "XBOX_UNLOCK_ALL");
+    {
+        int p;
+        for (p = 0; p < SETTINGS_PRESET_COUNT; p++) CHECK(settings_def(S_SAVE_PROFILE)->preset[p] == NULL);
+        settings_set(&A, S_SAVE_PROFILE, "unlockall");
+        CHECK(settings_choice_index(&A, S_SAVE_PROFILE) == 1);
+        for (p = 0; p < SETTINGS_PRESET_COUNT; p++) {
+            settings_apply_preset(&A, p);                 /* a preset never changes the profile */
+            CHECK_STR(settings_get(&A, S_SAVE_PROFILE), "unlockall");
+        }
+        CHECK(!settings_set(&A, S_SAVE_PROFILE, "everything"));   /* not one of the choices */
+        CHECK_STR(settings_get(&A, S_SAVE_PROFILE), "unlockall");
+        settings_defaults(&A);
+    }
     CHECK(settings_current_preset(&A) == SETTINGS_PRESET_RECOMMENDED);
 
     settings_apply_preset(&A, SETTINGS_PRESET_STEAM_DECK);
@@ -165,9 +194,11 @@ static void test_defaults_presets(void)
     CHECK_STR(settings_get(&A, S_SMAA), "off");
     CHECK_STR(settings_get(&A, S_FPS_LIMIT), "60");
     CHECK_STR(settings_get(&A, S_TEX_FILTER), "off");
+    CHECK_STR(settings_get(&A, S_RACE_HUD), "xbox");      /* the console's stretched HUD */
 
     settings_apply_preset(&A, SETTINGS_PRESET_RECOMMENDED);
     CHECK(settings_current_preset(&A) == SETTINGS_PRESET_RECOMMENDED);
+    CHECK_STR(settings_get(&A, S_RACE_HUD), "85");        /* back from Original Xbox */
     CHECK(settings_set(&A, S_SMAA, "ultra"));
     CHECK(settings_current_preset(&A) == SETTINGS_PRESET_CUSTOM);
     /* a setting no preset names leaves the preset as it is */
@@ -242,6 +273,12 @@ static void test_text(void)
     CHECK(strstr(t, "FixGamma=0\n") != NULL);
     CHECK(strstr(t, "FixCullWinding=") == NULL);         /* hidden at its default: not written */
     CHECK(strstr(t, "HdTexturesMenus=") == NULL);
+    for (i = 0; i < SETTINGS_COUNT; i++)                  /* pending at its default: not written */
+        if (settings_def(i)->flags & SETTING_PENDING) {
+            char k[96];
+            snprintf(k, sizeof k, "\n%s=", settings_def(i)->key);
+            CHECK(strstr(t, k) == NULL);
+        }
     CHECK(strstr(t, "Square=;\n") != NULL && strstr(t, "Circle==\n") != NULL);
     CHECK(strstr(t, "(PC)") != NULL);
     r = settings_parse(&B, t, n, &bad);
@@ -254,6 +291,20 @@ static void test_text(void)
             CHECK(0);
         }
     free(t);
+
+    /* a pending setting changed by hand is written (the first boolean one, if any) */
+    for (i = 0; i < SETTINGS_COUNT; i++) {
+        const SettingDef *d = settings_def(i);
+        char k[96];
+        if (!(d->flags & SETTING_PENDING) || d->type != SETTING_BOOL) continue;
+        settings_defaults(&A);
+        settings_set(&A, i, strcmp(d->def, "1") ? "1" : "0");
+        snprintf(k, sizeof k, "\n%s=%s\n", d->key, settings_get(&A, i));
+        n = fmt(&A, &t);
+        CHECK(strstr(t, k) != NULL);
+        free(t);
+        break;
+    }
 
     /* an old file (no [Meta] Version) is not read */
     {
@@ -287,6 +338,7 @@ static void test_text(void)
         CHECK_STR(settings_get(&B, S_FPS_LIMIT), "monitor");
         CHECK_STR(settings_get(&B, S_DISC_IMAGE), "C:\\a b\\c.iso");
         CHECK(bad == 3);
+        CHECK_STR(B.ignored, "FrameRateLimit, Unknown, line 8");
     }
     /* a newer version: the keys known here are read */
     {
@@ -295,6 +347,55 @@ static void test_text(void)
         CHECK(r == SETTINGS_LOAD_NEWER);
         CHECK_STR(settings_get(&B, S_SMAA), "low");
         CHECK(bad == 1);
+        CHECK_STR(B.ignored, "NewThing");
+    }
+    /* a newer version's settings are kept when the file is written again,
+     * in their section or in a section of their own, and stay kept */
+    {
+        static const char newer[] =
+            "[Meta]\nVersion=2\n"
+            "[Graphics]\nSmoothEdges=low\nNewThing=5\n"
+            "[Future]\nA=1\n"
+            "[Display]\nResolution=1280x720\nWider = yes please\n"
+            "[future]\nB=2\n"
+            "[Display]\nFrameRateLimit=75\n";
+        char *t2;
+        size_t n2;
+        r = settings_parse(&B, newer, sizeof newer - 1, &bad);
+        CHECK(r == SETTINGS_LOAD_NEWER);
+        CHECK(bad == 5);
+        CHECK_STR(B.ignored, "NewThing, A, Wider, B, FrameRateLimit");
+        CHECK_STR(settings_get(&B, S_FPS_LIMIT), "monitor");  /* not valid here: the default */
+        n = fmt(&B, &t);
+        CHECK(strstr(t, "[Meta]\nVersion=1\n") != NULL);
+        CHECK(strstr(t, "\nNewThing=5\n") != NULL && strstr(t, "\nWider=yes please\n") != NULL);
+        CHECK(strstr(t, "\n[Future]\nA=1\nB=2\n") != NULL);   /* one section, as first spelled */
+        CHECK(strstr(t, "[future]") == NULL);
+        CHECK(strstr(t, "FrameRateLimit=75") == NULL);
+        {   /* each kept line in its own section: after [Graphics], before the next header */
+            const char *g = strstr(t, "\n[Graphics]\n"), *k = strstr(t, "\nNewThing=5\n");
+            CHECK(g && k && k > g && !memchr(g + 2, '[', (size_t)(k - g - 2)));
+        }
+        r = settings_parse(&A, t, n, &bad);
+        CHECK(r == SETTINGS_LOAD_OK && bad == 4);             /* the four kept lines, no other */
+        n2 = fmt(&A, &t2);
+        CHECK(n2 == n && !strcmp(t, t2));                    /* stable from one save to the next */
+        free(t2);
+        free(t);
+    }
+    /* many unknown lines: the list ends with "...", the kept lines fit their buffer */
+    {
+        static char many[64 * 1024];
+        size_t k = 0;
+        int j;
+        k += (size_t)sprintf(many + k, "[Meta]\nVersion=1\n[Display]\n");
+        for (j = 0; j < 2000; j++) k += (size_t)sprintf(many + k, "Unknown%04d=some value\n", j);
+        r = settings_parse(&B, many, k, &bad);
+        CHECK(r == SETTINGS_LOAD_OK && bad == 2000);
+        CHECK(strlen(B.ignored) < sizeof B.ignored && strstr(B.ignored, "...") != NULL);
+        CHECK(strlen(B.extra) < sizeof B.extra && strstr(B.extra, "Unknown0000=some value\n") != NULL);
+        settings_defaults(&B);
+        CHECK(!B.extra[0] && !B.ignored[0]);
     }
     /* a buffer too small gets a truncated, terminated text and the full length */
     {
@@ -379,6 +480,63 @@ static void test_files(const char *root)
     (void)f;
 }
 
+/* ── the install root: the game in bin\ below OpenTricky.exe, or everything in one folder ── */
+static void test_install_root(const char *root)
+{
+    char top[600], inst[600], bin[600], sub[600], dev[600], build[600], lone[600], lonebin[600];
+    char l1[700], l2[700], l3[700], out[1024], slash[700];
+
+    path(top, root, "root \xC3\xA9");          /* outside ASCII, as test_files */
+    path(inst, top, "OpenTricky");
+    path(bin, inst, "bin");
+    path(sub, inst, "tools");                 /* a subfolder not named bin */
+    path(dev, top, "port");
+    path(build, dev, "build");
+    path(lone, top, "lone");
+    path(lonebin, lone, "bin");
+    mk(root); mk(top); mk(inst); mk(bin); mk(sub); mk(dev); mk(build); mk(lone); mk(lonebin);
+    path(l1, inst, SETTINGS_LAUNCHER_EXE);
+    path(l2, bin, SETTINGS_LAUNCHER_EXE);
+    path(l3, build, SETTINGS_LAUNCHER_EXE);
+    write_file(l1, "x");
+
+    /* 1. flat (0.1.1, a test pack): the launcher's own folder */
+    CHECK(settings_install_root_of(inst, out, sizeof out));
+    CHECK_STR(out, inst);
+    /* 2. the game in bin\ below OpenTricky.exe: the parent */
+    CHECK(settings_install_root_of(bin, out, sizeof out));
+    CHECK_STR(out, inst);
+    sprintf(slash, "%s\\", bin);              /* a trailing separator changes nothing */
+    CHECK(settings_install_root_of(slash, out, sizeof out));
+    CHECK_STR(out, inst);
+    /* 3. a subfolder with another name: itself */
+    CHECK(settings_install_root_of(sub, out, sizeof out));
+    CHECK_STR(out, sub);
+    /* 4. a developer's build folder, with or without a launcher beside it: itself */
+    CHECK(settings_install_root_of(build, out, sizeof out));
+    CHECK_STR(out, build);
+    write_file(l3, "x");
+    CHECK(settings_install_root_of(build, out, sizeof out));
+    CHECK_STR(out, build);
+    /* 5. bin\ with no OpenTricky.exe above it: itself */
+    CHECK(settings_install_root_of(lonebin, out, sizeof out));
+    CHECK_STR(out, lonebin);
+    /* 6. OpenTricky.exe in bin\ too: bin\ is a whole install of its own */
+    write_file(l2, "x");
+    CHECK(settings_install_root_of(bin, out, sizeof out));
+    CHECK_STR(out, bin);
+    /* 7. no folder at all */
+    CHECK(!settings_install_root_of("", out, sizeof out));
+    CHECK(!settings_install_root_of(NULL, out, sizeof out));
+    /* 8. settings_locate reads and writes in the folder it is given */
+    CHECK(settings_locate(inst, lone, 0, out, sizeof out) == SETTINGS_AT_GAME_FOLDER);
+    path(slash, inst, "settings.ini");
+    CHECK_STR(out, slash);
+
+    rm(l1); rm(l2); rm(l3);
+    rmdir_(lonebin); rmdir_(lone); rmdir_(build); rmdir_(dev); rmdir_(sub); rmdir_(bin); rmdir_(inst); rmdir_(top);
+}
+
 int main(int argc, char **argv)
 {
     const char *root = argc > 1 ? argv[1] : "settings_test_tmp";
@@ -387,6 +545,7 @@ int main(int argc, char **argv)
     test_values();
     test_text();
     test_files(root);
+    test_install_root(root);
     printf("%s: %d checks, %d failed\n", s_fail ? "FAIL" : "PASS", s_checks, s_fail);
     return s_fail ? 1 : 0;
 }

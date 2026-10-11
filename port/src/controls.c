@@ -151,6 +151,33 @@ void controls_from_settings(ControlMap *m, const Settings *s)
     }
 }
 
+/* Cross and Start always have a key on the keyboard: without them a player
+ * with no controller cannot confirm in the menus or pause. None for either
+ * (a settings.ini edited by hand) gets the default key back when no other
+ * control uses it; said in the log either way. */
+void controls_keep_essential(ControlMap *m)
+{
+    static const struct { int ctl; BYTE vk; const char *name; } k_need[] = {
+        { CTL_A, VK_SPACE, "Cross" }, { CTL_START, VK_RETURN, "Start" },
+    };
+    size_t i;
+    int j;
+    for (i = 0; i < sizeof k_need / sizeof k_need[0]; i++) {
+        char key[16];
+        BOOL taken = FALSE;
+        if (m->key[k_need[i].ctl]) continue;
+        for (j = 0; j < CTL_COUNT; j++)
+            if (m->key[j] == k_need[i].vk) taken = TRUE;
+        key_name(k_need[i].vk, key, sizeof key);
+        if (taken) {
+            printf("Controls:   %s has no key and %s is used: choose one in the launcher\n", k_need[i].name, key);
+            continue;
+        }
+        m->key[k_need[i].ctl] = k_need[i].vk;
+        printf("Controls:   %s had no key: %s used\n", k_need[i].name, key);
+    }
+}
+
 void controls_to_settings(const ControlMap *m, Settings *s)
 {
     int i;
@@ -291,8 +318,10 @@ void controls_read_keyboard(ControlsPad *io)
     BOOL front;
     if (s_suspended || !game) return;
     /* Real keys only while the game window itself is in front: not in one
-     * of our windows, not in another program. */
-    front = GetForegroundWindow() == game;
+     * of our windows, not in another program. Nor while Alt is held: Alt is
+     * never a binding, and Alt+Enter (full screen) or Alt+Tab must not also
+     * press what Enter or Tab is bound to (Start, Select). */
+    front = GetForegroundWindow() == game && !(GetAsyncKeyState(VK_MENU) & 0x8000);
     controls_get_current(&m);
     for (i = 0; i < CTL_COUNT; i++)
         if (m.key[i] && ((front && (GetAsyncKeyState(m.key[i]) & 0x8000)) || autokey_held(m.key[i])))

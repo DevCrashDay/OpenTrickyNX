@@ -8,7 +8,8 @@
 void ps2legend_init(void);
 
 /* recomp_lookup_manual: the Basic Controls splash hook (always), the
- * loading legend (Y in the Pro preset, PS2 layout only), the
+ * training's loading pad and legend (hidden, XBOX_FIX_HIDE_LOAD_LEGEND,
+ * default on), the loading legend (Y in the Pro preset, PS2 layout only), the
  * save manager (hard disk check's wait, XBOX_FIX_SKIP_HDD_CHECK, and "quit
  * game", XBOX_FIX_QUIT_GAME; both default on) and the Save / Load device
  * rows (memory units hidden, XBOX_FIX_HIDE_MU, default on). */

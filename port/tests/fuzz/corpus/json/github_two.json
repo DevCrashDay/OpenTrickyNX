@@ -1,0 +1,30 @@
+[
+  {
+    "url": "https://api.github.com/repos/opentricky/opentricky/releases/1001",
+    "html_url": "https://github.com/opentricky/opentricky/releases/tag/v0.1.2-unstable",
+    "id": 1001,
+    "author": { "login": "dev", "id": 7, "site_admin": false },
+    "node_id": "RE_kwDOAAAAAA",
+    "tag_name": "v0.1.2-unstable",
+    "target_commitish": "main",
+    "name": "OpenTricky 0.1.2 — unstable",
+    "draft": false,
+    "prerelease": true,
+    "created_at": "2026-10-01T10:00:00Z",
+    "published_at": "2026-10-01T11:00:00Z",
+    "assets": [
+      { "url": "https://api.github.com/x", "id": 5, "name": "OpenTricky-0.1.2.zip", "label": null,
+        "content_type": "application/zip", "state": "uploaded", "size": 12345678, "download_count": 3,
+        "browser_download_url": "https://github.com/opentricky/opentricky/releases/download/v0.1.2-unstable/OpenTricky-0.1.2.zip" },
+      { "name": "SHA256SUMS.txt", "size": 98, "browser_download_url": "https://github.com/o/o/releases/download/v0.1.2-unstable/SHA256SUMS.txt" }
+    ],
+    "tarball_url": null,
+    "body": "<!-- launcher\r\nversion: 0.1.2\r\ntitle: No more freezes\r\ncard: snowdream\r\nfixes: The game no longer freezes after a video\r\nnew: PlayStation-style button icons\r\nbetter: Smoother on big screens 🏂\r\n-->\r\n## Highlights\r\n- **Fast** start\r\n"
+  },
+  {
+    "html_url": "https://github.com/opentricky/opentricky/releases/tag/v0.1.1",
+    "tag_name": "v0.1.1", "name": null, "draft": false, "prerelease": false, "assets": [],
+    "body": "# OpenTricky 0.1.1\n\n**Highlights**\n- First `stable` [release](https://x.y)\n- Café \"quoted\" \\ back\/slash\n* _third_ item\n- fourth\n"
+  },
+  { "tag_name": "v0.0.9-dev", "draft": true, "prerelease": true, "assets": null, "body": null, "reactions": { "+1": 2, "laugh": 0 }, "mentions_count": 1.5e2 }
+]

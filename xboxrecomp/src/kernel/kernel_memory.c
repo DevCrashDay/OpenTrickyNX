@@ -12,6 +12,7 @@
 #include "kernel.h"
 #include "xbox_memory_layout.h"
 #include <malloc.h>
+#include <stdio.h>
 
 /* ============================================================================
  * Helper: Xbox protect flags → Win32 protect flags
@@ -203,10 +204,17 @@ ULONG __stdcall xbox_MmQueryAllocationSize(PVOID BaseAddress)
 
 PVOID __stdcall xbox_MmClaimGpuInstanceMemory(ULONG NumberOfBytes, PULONG NumberOfPaddingBytes)
 {
-    /* GPU instance memory - handled by D3D11 layer */
+    /* GPU instance memory - handled by D3D11 layer. The block lives inside
+     * the guest window (XBOX_GPU_INSTANCE_END_VA): a VirtualAlloc(NULL)
+     * block sits outside it, so the 32-bit guest address the bridge derived
+     * from it pointed somewhere unrelated (a different RAM mirror on every
+     * run, or the aperture). */
+    PVOID p = (PVOID)((uintptr_t)XBOX_GPU_INSTANCE_END_VA + xbox_GetMemoryOffset());
     if (NumberOfPaddingBytes)
         *NumberOfPaddingBytes = 0;
-    PVOID p = VirtualAlloc(NULL, NumberOfBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (NumberOfBytes > XBOX_GPU_INSTANCE_SIZE)
+        fprintf(stderr, "MmClaimGpuInstanceMemory: %u bytes claimed, block is %u\n",
+                (unsigned)NumberOfBytes, XBOX_GPU_INSTANCE_SIZE);
     XBOX_TRACE(XBOX_LOG_MEM, "MmClaimGpuInstanceMemory(%u) = %p (stub)", NumberOfBytes, p);
     return p;
 }

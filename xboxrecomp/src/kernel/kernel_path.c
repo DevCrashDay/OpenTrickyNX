@@ -96,9 +96,20 @@ static WCHAR s_game_dir[MAX_PATH];
 static WCHAR s_save_dir[MAX_PATH];
 static BOOL  s_initialized = FALSE;
 
+/* A path for the log, in UTF-8: "%S" converts through the C locale, which
+ * has no form for most non-ASCII characters. */
+static const char* path_u8(const WCHAR* w, char* buf, int n)
+{
+    if (!WideCharToMultiByte(CP_UTF8, 0, w, -1, buf, n, NULL, NULL)) buf[0] = '\0';
+    return buf;
+}
+
+/* Both paths are UTF-8 (the host's own encoding on POSIX); every file below
+ * them is then opened through the wide calls. */
 void xbox_path_init(const char* game_dir, const char* save_dir)
 {
     WCHAR save_base[MAX_PATH];
+    char  u8a[MAX_PATH * 3], u8b[MAX_PATH * 3];
 
     if (game_dir) {
         MultiByteToWideChar(CP_UTF8, 0, game_dir, -1, s_game_dir, MAX_PATH);
@@ -134,13 +145,14 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
     if (s_save_dir[0] && !CreateDirectoryW(s_save_dir, NULL)) {
         DWORD err = GetLastError();
         if (err != ERROR_ALREADY_EXISTS) {
-            xbox_log(XBOX_LOG_ERROR, XBOX_LOG_PATH,
-                     "could not create save directory %S (error %u)", s_save_dir, err);
+            xbox_log(XBOX_LOG_ERROR, XBOX_LOG_PATH, "could not create save directory %s (error %u)",
+                     path_u8(s_save_dir, u8b, (int)sizeof u8b), err);
         }
     }
 
     s_initialized = TRUE;
-    xbox_log(XBOX_LOG_INFO, XBOX_LOG_PATH, "Path init: game=%S, save=%S", s_game_dir, s_save_dir);
+    xbox_log(XBOX_LOG_INFO, XBOX_LOG_PATH, "Path init: game=%s, save=%s",
+             path_u8(s_game_dir, u8a, (int)sizeof u8a), path_u8(s_save_dir, u8b, (int)sizeof u8b));
 }
 
 /*

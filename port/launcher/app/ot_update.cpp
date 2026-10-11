@@ -72,11 +72,14 @@ struct Json {
                 unsigned cp;
                 if (!hex4(cp)) return false;
                 if (cp >= 0xD800 && cp < 0xDC00 && p + 6 <= s.size() && s[p] == '\\' && s[p + 1] == 'u') {
+                    size_t q = p;
                     p += 2;
                     unsigned lo;
                     if (!hex4(lo)) return false;
-                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                    if (lo >= 0xDC00 && lo < 0xE000) cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                    else p = q;                 /* not a pair: the next \u is read on its own */
                 }
+                if (cp >= 0xD800 && cp < 0xE000) cp = 0xFFFD;      /* a lone surrogate is not UTF-8 */
                 put_utf8(o, cp);
                 break;
             }

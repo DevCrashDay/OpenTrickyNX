@@ -2,6 +2,65 @@
 
 All notable changes to OpenTricky. Versions follow [Semantic Versioning](https://semver.org/); `-unstable` marks test releases.
 
+## [0.1.2-unstable] — 2026-10-11
+
+A round of fixes that bring the game closer to the original game: the "melting" snow, the Showoff snowflakes, the crowd and voices at the end of a race, the stretched picture at the start, long sessions. Also: the HUD at high frame rates, Start during the intro, VSync *Adaptive*, saves in folders with accents, private crash reports, a new *Save profile* with everything unlocked, and a launcher that tells you when a setting does nothing. The game now lives in a `bin` folder.
+
+### Fixed
+- **"Melting" terrain**: on Snowdream especially, the snow could look deformed or smeared and your rider sink into it. The start of the 3D scene inherited the size of the last HUD element drawn, so the *Race HUD size* setting leaked into the scenery. HUD scaling now never touches the 3D scene. This was a defect of the port, not of the original game.
+- **Showoff snowflakes**: they could almost never be collected, because of a wrong collision check in the port. Fixed, as in the original game.
+- **Crowd and ambience above 60 FPS**: the crowd, its chants and the track ambience were cut above 60 frames per second, most noticeably in the end-of-race cinematic. They are back, as in the original game. You may hear more ambience in races than before: that is the original.
+- **Rider's voice in the end-of-race close-up**: the rider now speaks during the close-up, as in the original game.
+- **Stretched picture at the start of a race**: skipping the trick screen while it opens no longer shows the picture stretched while the black bars slide away.
+- **Long sessions**: after about five events in a row without quitting, the game ran out of room to open its disc files. The next track loaded without its world (or with parts missing), then the game crashed. Files are now closed properly.
+- **Original behaviour restored**: three small things the port had lost (how a rider is put back on the track, one collision case and one safety case). In some situations an AI rider may be put back slightly differently than before, as in the original game.
+- **HUD speed at high frame rates**: the race HUD and the race menus now run at the right speed above 60 FPS, as at 60.
+- **HUD jumps during a trick**: the score, the boost and the Tricky meter no longer jump back to their old position for a frame or two.
+- **Start during the intro videos**: after the EA logo, a press of Start (Enter on the keyboard) could be missed now and then on some PCs, because the video waited on the graphics driver. It is now seen at the first press. The EA logo itself can't be skipped, as in the original game.
+- **VSync *Adaptive* tears less**: it only tears when the game stays slow for a while (about half a second); a load or a one-off hitch never counts. *On* and *Off* are unchanged.
+- **Folders with accents**: with a save folder or a game folder whose name has accents or other letters outside English, saves could fail, or go to a wrongly named copy of the folder. Paths are now handled in full. Saves that 0.1.1 wrote to such a copy are **copied** to the right folder at the first start, only when the right folder has no saves yet; no file is replaced, moved or deleted, and the old folder stays as it is.
+- **Wine and Proton (Steam Deck, Linux)**: the game could freeze before the first picture, or crash when you pressed *Play*, when Wine had already taken the memory area it needs. It now picks another one. Not confirmed by a player on a Steam Deck or Linux yet. Nothing changes on Windows.
+- ***Skip launcher next time*** with a disc image the game can't use: the launcher and the game no longer reopen each other. The launcher shows up with "The game could not use this disc image" and what to do.
+- **Cross and Start always have a key**: the launcher won't leave their keyboard key empty, and if `settings.ini` has no key for them, the game uses Space or Enter (when free) and says so in the log.
+- **Keys of the game window**: *Alt+Enter* (full screen) no longer presses Start, and *Alt+Tab* no longer presses Select. The launcher won't bind F10, F11 or F12 (F11: full screen, F12: screenshot).
+- ***Reset tab*** (*Game* tab) no longer forgets your save folder.
+- **`settings.ini`**: lines the launcher doesn't know (from a newer or an older version) are kept when it saves, instead of being dropped.
+- **Replay help**: Select is now called *SELECT*, as on the PS2, and its lines read *Change Camera* and *Exit*.
+- **Crash reports**: folder names, possibly including your Windows user name, could stay in the crash dump (`crash.dmp`) and in `settings.txt` / `log.txt`. They are now removed in every form, and the names you chose (disc image, save folder, HD pack folder) are hidden; the names of the game's own files stay.
+- Known issues listed for 0.1.1 that are now fixed: the doubled picture at the start of a race, the replay help calling Select *BACK*, and most of the presses of Start ignored during the opening logo video (the rest came from the EA logo, which can't be skipped in the original game either).
+
+### New
+- **Save profile** (launcher, *Game* tab): *My save* (your own progress, as before) or *Unlock all*, a separate save with everything unlocked (the game's own unlock cheat), kept in an `UnlockAll` folder inside your save folder. Your own save is never touched; back on *My save*, your progress is there as you left it.
+- **Shader cache**: compiled shaders are kept on disk (in a `cache` folder next to `settings.ini`), so there are fewer small hitches from the second start on. Anything unusable is simply recompiled.
+- **Notes under the settings** (launcher): a short yellow note when a setting has no effect on your screen, or doesn't do what you might think. For example: *Menus* at 4:3, *Field of view* up to 16:9, *Xbox 16:9* menus on a screen narrower than 16:9, a *Frame rate limit* above your screen's rate with VSync, *Show frame rate* in fullscreen, *HD textures* without a pack, *Update channel* while updates are off, a *Resolution* or *Screen shape* that doesn't match your screen.
+- **A banner** at the top of the settings when `settings.ini` couldn't be read as written: lines not understood (named), a file from a newer version, no `[Meta] Version` line, or a file that can't be read. The game's log lists the ignored lines too.
+- ***Restore*** now asks before going back to the previous version; *Cancel* changes nothing.
+- **Signed releases**: the launcher can check a release's signature. It will be used from a later, signed release.
+- The launcher's disc check now matches the game's: an *SSX Tricky* (USA) disc image with a changed game program is shown as the wrong disc image, with the reason.
+
+### Better
+- **New defaults**: *Speakers* is *Stereo*, and *Smoother legs in turns* is on (*Settings → Advanced*, marked experimental; it changes the picture only). The *Original Xbox* preset turns it off; *Recommended* and *Steam Deck* keep it on.
+- **Install folder**: the game is now `bin\SSX Tricky.exe`; the top of the folder keeps `OpenTricky.exe`, `README.txt` and your own files (settings, saves, screenshots, crash reports). **Shortcuts to the old `SSX Tricky.exe` need to be made again** (to `OpenTricky.exe`, or to `bin\SSX Tricky.exe` to start the game straight away). Coming from 0.1.1: install 0.1.2 fresh in a new folder; copy the `Saves` folder (and `portable.txt`) only if your saves were inside the old folder, don't copy `settings.ini` (the new defaults are recommended), then delete the old folder.
+- ***Resolution*** lists *Auto* and the sizes of the chosen *Screen shape* only. Changing the screen shape sets *Resolution* back to *Auto*.
+- **Presets**: *Original Xbox* now also sets *Race HUD size* to *Like the Xbox*; *Recommended* and *Steam Deck* set it back to 85 %.
+- **Key conflicts** in the launcher: the dialog offers *Swap* or *Cancel*.
+- **Training**: the loading screen is black with "loading...", like the other loading screens, instead of an Xbox controller picture.
+
+### Removed
+- `SSX Tricky.exe` at the top of the folder (now in `bin\`).
+- The Xbox controller picture and its labels on the Training loading screen.
+- *Use … for both* in the launcher's key conflict dialog.
+
+### Known issues
+- **Performance**: frame rate drops when riders collide; Snowdream runs slower than other tracks.
+- Only Xbox-style (XInput) controllers are supported natively, so *Button style: Auto* shows Xbox buttons.
+- **Steam Deck and Linux** (Proton): 0.1.2 should start there now, but no player has confirmed it yet, the *Steam Deck* preset included.
+- **5.1 surround** is not yet tested on real 5.1 speakers.
+- **Smoother legs in turns** is experimental.
+- **Terrain**: some pieces of terrain show visible seams, as in the original game.
+
+See also [Known issues](README.md#known-issues) in the README.
+
 ## [0.1.1-unstable] — 2026-10-08
 
 A new launcher, the original PS2 controls, wide screens handled from the HUD to the menus, and a round of stability fixes, including a rare save loss.

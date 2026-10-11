@@ -84,6 +84,7 @@ typedef struct {
 } iso_handle;
 
 static iso_handle s_iso_handles[ISO_HANDLE_MAX];
+static int s_iso_in_use;                /* slots taken, for the file log */
 static CRITICAL_SECTION s_iso_cs;
 static BOOL s_iso_cs_init = FALSE;
 
@@ -122,6 +123,7 @@ static HANDLE iso_handle_alloc(uint32_t sector, uint32_t size, BOOL is_dir)
             s_iso_handles[i].pos        = 0;
             s_iso_handles[i].enum_index = 0;
             s_iso_handles[i].mem        = NULL;
+            s_iso_in_use++;
             LeaveCriticalSection(&s_iso_cs);
             return (HANDLE)(ISO_HANDLE_TAG | (UINT_PTR)i);
         }
@@ -136,6 +138,7 @@ static void iso_handle_free(HANDLE h)
     iso_handle *s = iso_handle_get(h);
     if (!s) return;
     EnterCriticalSection(&s_iso_cs);
+    if (s->in_use) s_iso_in_use--;
     s->in_use = FALSE;
     free(s->mem);
     s->mem = NULL;
@@ -466,6 +469,22 @@ NTSTATUS __stdcall xbox_NtWriteFile(
 }
 
 void xbox_dir_context_release(HANDLE FileHandle);
+
+/* For the kernel bridge's NtClose (the path the translated code takes): a
+ * virtual ISO handle gets its slot back here; returns 0 for any other
+ * handle. Without it the 256 slots were never freed and, after a few
+ * events chained in one session, every disc open failed. */
+int xbox_iso_handle_release(HANDLE Handle)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("XBOX_FIX_ISOCLOSE"); on = !(e && e[0] == '0'); }
+    if (!on || !is_iso_handle(Handle)) return 0;
+    iso_handle_free(Handle);
+    return 1;
+}
+
+/* Slots of the virtual ISO handle table in use (shown in the file log). */
+int xbox_iso_handles_in_use(void) { return s_iso_in_use; }
 
 NTSTATUS __stdcall xbox_NtClose(HANDLE Handle)
 {

@@ -13,7 +13,7 @@
     <div class="stage" id="stage">
 
         <div class="pill disc" data-class-warn="disc_state == 'warn'" data-class-bad="disc_state == 'bad'"
-             data-event-click="choose_disc"><span class="dt"></span><b>{{disc_title}}</b>&nbsp; <span class="pb" data-class-plain="have_disc">{{disc_note}}</span></div>
+             data-event-click="choose_disc"><b>{{disc_title}}</b>&nbsp; <span class="pb" data-class-plain="have_disc">{{disc_note}}</span></div>
         <div class="pill ver" id="ver" data-class-upd="upd_state == 'update'" data-event-click="upd('pill')"><span class="ck" data-if="upd_state == 'latest'">&#x2713;</span>{{version_text}}</div>
 
         <div class="title">Settings</div>
@@ -28,6 +28,7 @@
         </div>
 
         <div class="rows" id="rows">
+            <div class="ininote" data-if="ini_note != ''">{{ini_note}}</div>
             <div data-for="r : rows"><div data-class-grp="r.is_group" data-class-row="!r.is_group" data-attr-rid="r.id"
                  data-attr-id="'r' + r.id" data-event-click="row_click(r.id)">
                 <span data-if="r.is_group">{{r.label}}</span>
@@ -38,7 +39,7 @@
                 <span class="tog" data-if="r.toggle" data-class-on="r.on"><span class="knob"></span></span>
                 <span class="plainv" data-if="r.plain">{{r.value}}</span>
                 <span class="act" data-if="r.button != ''"><span class="av" data-if="r.value != ''">{{r.value}}</span><span class="ab">{{r.button}}</span></span>
-            </div></div>
+            </div><div class="rnote" data-if="r.note != ''">{{r.note}}</div></div>
 
             <!-- CONTROLS: the remapping table, one line per PS2 button. -->
             <div class="ctl" data-if="tab == 3">
@@ -54,7 +55,7 @@
             </div>
         </div>
 
-        <div class="help" data-class-styles="tab == 3">
+        <div class="help">
             <!-- CONTROLS: the four button styles, each drawn with its own pictures. -->
             <div class="styles" data-if="tab == 3">
                 <div class="st" data-class-on="bstyle == 0" data-event-click="style_pick(0)"><span class="sn">AUTO</span>
@@ -71,7 +72,6 @@
             <p class="extra" data-if="help_extra != ''">{{help_extra}}</p>
             <div class="def" data-if="help_default != ''">Default: <b>{{help_default}}</b></div>
             <div class="og" data-if="help_pc"><b>PC</b> = not on the original Xbox. The <b>Original Xbox</b> preset turns these off.</div>
-            <div class="env" data-if="help_env != ''">{{help_env}}</div>
         </div>
 
     </div>

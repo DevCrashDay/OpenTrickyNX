@@ -10,6 +10,7 @@
 #include "aspect.h"
 
 void sub_000F9EA0(void);    /* Renderer_SetScreenMode (thiscall, ret 4) */
+void sub_00103D40(void);    /* Renderer_SetScreenParams (thiscall, ret 4): 5 dwords to +0x530 */
 void sub_0017770D(void);    /* Matrix_BuildPerspectiveProjection (cdecl, ret 20) */
 void sub_00075DE0(void);    /* Camera_ComputeDesiredEye (thiscall, ret 0x10) */
 void sub_000759F0(void);    /* camera collision check (cdecl: eye*, pivot*, k) */
@@ -128,6 +129,33 @@ void hook_aspect_000F9EA0(void)
     } else if (self == s_renderer) {
         s_renderer = 0;
     }
+}
+
+/* Renderer_SetScreenParams(p): the title copies a whole screen block (mode,
+ * letterbox offset and height, x-scale, y-scale; +0x530..+0x540) it saved
+ * earlier: the race intro's letterbox, sliding away tick by tick. Saved
+ * while a frame was framed, its x-scale is the frame's (1.0 or 0.75); written
+ * back in the race, it held for each tick: the render right after the tick
+ * built its projection with it (the picture stretched; at 240 Hz one image in
+ * four, a flickering double image, at 60 the whole time) until the next
+ * RenderFrame put the wide one back. Seen when the tips panel is skipped
+ * during its opening animation: the letterbox then slides away after
+ * the start grid instead of before it. In mode 2 the x-scale is ours again
+ * (XBOX_FIX_SCREEN_PARAMS, default 1; 0 = as before); the letterbox itself
+ * (offset, height) stays the title's. */
+static int fix_screen_params(void)
+{
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("XBOX_FIX_SCREEN_PARAMS"); v = !(e && e[0] == '0'); }
+    return v;
+}
+
+void hook_aspect_00103D40(void)
+{
+    uint32_t self = g_ecx;
+    sub_00103D40();
+    if (fix_screen_params() && g_aspect_hook_on && self == s_renderer && MEM32(self + 0x530u) == 2u)
+        MEM32(self + 0x53Cu) = s_boxed ? boxed_bits() : s_xscale_bits;
 }
 
 /* Frames shown in the 16:9 frame (menus, loading screens; hud_anchor.c
@@ -317,6 +345,7 @@ void hook_cam_00078DE0(void)
 void (*aspect_lookup(unsigned int xbox_va))(void)
 {
     if (xbox_va == 0x000F9EA0u) return hook_aspect_000F9EA0;
+    if (xbox_va == 0x00103D40u) return hook_aspect_00103D40;
     if (xbox_va == 0x0017770Du) return hook_fov_0017770D;
     if (xbox_va == 0x00075DE0u) return hook_cam_00075DE0;
     if (xbox_va == 0x000759F0u) return hook_cam_000759F0;

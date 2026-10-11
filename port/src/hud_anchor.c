@@ -43,7 +43,9 @@ static int   s_race2d;              /* XBOX_FIX_RACE2D: 0 off, 1 on (default), 2
 static int   s_mode = HUD_SHAPE_PROPORTIONAL;
 static int   s_size = 100;
 static int   s_trlog;               /* XBOX_HUD_TRLOG=N: the elements of every Nth list */
-static int   s_diag;                /* XBOX_HUD_DIAG=1 (diagnostic) */
+static int   s_diag;                /* XBOX_HUD_DIAG=1 (diagnostic), 2: + race HUD records left unscaled, 3: + joins across sides, 4: + every record */
+static int   s_slide = 1;           /* XBOX_FIX_HUD_ANCHOR: 1 (default) or 2 sliding anchor, 0 by thirds */
+static int   s_side = 1;            /* XBOX_FIX_HUD_ANCHOR=1 (default): elements join on the same side only (2: they need not) */
 static int   s_banner_watch;        /* the 0xD2D80 hook looks at what the banner draws */
 static int   s_panel_log;           /* XBOX_PANEL_LOG=1 (diagnostic) */
 
@@ -91,6 +93,9 @@ void hud_anchor_set(double shape, int mode, int size)
     s_trlog = e ? atoi(e) : 0;
     e = getenv("XBOX_HUD_DIAG");
     s_diag = e ? atoi(e) : 0;
+    e = getenv("XBOX_FIX_HUD_ANCHOR");
+    s_slide = !(e && e[0] == '0');
+    s_side = s_slide && !(e && e[0] == '2');
     if (!(shape > 1.0)) shape = 4.0 / 3.0;
     ky = (float)s_size / 100.0f;
     kx = shape > 4.0 / 3.0 + 0.005 ? (float)((4.0 / 3.0) / shape) * ky : ky;
@@ -134,7 +139,8 @@ void hud_anchor_set(double shape, int mode, int size)
         printf("Race 2D:    at 4:3 proportions, x %.4f%s\n", (4.0 / 3.0) / shape,
                s_race2d == 2 ? ", finish banner with the race HUD" : "");
     if (g_hud_anchor_on)
-        printf("HUD:        proportional, size %d%%, x %.4f y %.4f\n", s_size, kx, ky);
+        printf("HUD:        proportional, size %d%%, x %.4f y %.4f, anchors %s\n", s_size, kx, ky,
+               !s_slide ? "by thirds" : s_side ? "sliding, joined on the same side" : "sliding");
     else
         printf("HUD:        %s\n", s_mode == HUD_SHAPE_XBOX
                ? "like the Xbox (stretched to the screen)" : "as drawn by the title (4:3, 100%)");
@@ -369,10 +375,11 @@ void hook_hud_000D2D80(void)
  * HUD functions), so the first HUD record drawn from a list works out the
  * whole list: records close to each other -- overlapping rows, a gap under
  * a glyph's height -- make one element (a string with its shadow, a number
- * with its label), and the element goes to one anchor: the left edge, the
- * right edge or the centre of the player's view by the third its centre
- * falls in, and the same for the top, the middle or the bottom. An element
- * nearly as wide as the view (wipes, fades) keeps the stretch. */
+ * with its label), and the element goes to one anchor: the left edge of the
+ * player's view when its centre is in the left third, the right edge in the
+ * right third, the centre in the middle third (with a ramp to the edges at
+ * both ends of it, see anchor_of), and the same for the top and the bottom.
+ * An element nearly as wide as the view (wipes, fades) keeps the stretch. */
 #define MAX_REC 512
 
 typedef struct { float x0, x1, y0, y1; } Box;
@@ -439,26 +446,96 @@ static int near_box(const Box *e, const Box *q)
  * under the view's width (nothing chains across the screen) and
  *   - they are text on the same rows, a glyph's gap apart (both text-high:
  *     a tall bar must not pull its neighbours in), or
- *   - they are stacked: overlapping columns, a small gap apart (a bar and
+ *   - they are stacked: overlapping columns, a small gap apart (24 px; 16 with
+ *     XBOX_FIX_HUD_ANCHOR=1: a banner flying 24 px over the logo) (a bar and
  *     its end caps, the Tricky gauge and its logo), so that a panel keeps
- *     one anchor when the HUD is made smaller. */
+ *     one anchor when the HUD is made smaller; with XBOX_FIX_HUD_ANCHOR not
+ *     when they only touch at a corner. */
 static int joinable(const Box *a, const Box *b, float vw)
 {
     float x0 = a->x0 < b->x0 ? a->x0 : b->x0, x1 = a->x1 > b->x1 ? a->x1 : b->x1;
     float gy = a->y0 > b->y1 ? a->y0 - b->y1 : b->y0 > a->y1 ? b->y0 - a->y1 : 0.0f;
     if (x1 - x0 > 0.6f * vw) return 0;
-    if (a->x0 <= b->x1 + 2.0f && b->x0 <= a->x1 + 2.0f && gy <= 24.0f) return 1;      /* stacked */
+    if (a->x0 <= b->x1 + 2.0f && b->x0 <= a->x1 + 2.0f && gy <= (s_side ? 16.0f : 24.0f)) {   /* stacked */
+        /* XBOX_FIX_HUD_ANCHOR: not when they only touch at a corner (under
+         * half the narrower one's width and under half the shorter one's
+         * height in common) -- a trick's banner flying past the Tricky
+         * gauge stays apart (joined, the gauge took the banner's anchor and
+         * the banner the gauge's) */
+        float wa = a->x1 - a->x0, wb = b->x1 - b->x0, ha = a->y1 - a->y0, hb = b->y1 - b->y0;
+        float ox = (a->x1 < b->x1 ? a->x1 : b->x1) - (a->x0 > b->x0 ? a->x0 : b->x0);
+        float oy = (a->y1 < b->y1 ? a->y1 : b->y1) - (a->y0 > b->y0 ? a->y0 : b->y0);
+        if (!s_slide || ox + 2.0f >= 0.5f * (wa < wb ? wa : wb) || oy + 2.0f >= 0.5f * (ha < hb ? ha : hb)) return 1;
+    }
     if (a->y1 - a->y0 > 64.0f || b->y1 - b->y0 > 64.0f) return 0;
+    return near_box(a, b) || near_box(b, a) ? 2 : 0;
+}
+
+/* XBOX_FIX_HUD_ANCHOR=1: the side of an element, by the third its centre
+ * falls in (0 start, 1 middle, 2 end), as the anchor by thirds would take it. */
+static int side_of(float lo, float hi, float o, float len)
+{
+    float c = 0.5f * (lo + hi);
+    return c < o + len / 3.0f ? 0 : c > o + 2.0f * len / 3.0f ? 2 : 1;
+}
+
+/* XBOX_FIX_HUD_ANCHOR=1: a join must not move either element to an anchor of
+ * the other side. Two elements join only when their centres are in the same
+ * third across, and in the same third down or overlapping well (columns in
+ * common over half the narrower one, or rows over half the lower one: the
+ * Tricky gauge's logo letters over and beside its ball).
+ * Text joins text only on one line (rows in common over 3/4 of the lower
+ * one), then whatever the sides, so that a string across a third stays
+ * whole; a banner beside the logo is not on its line. A trick's points banner, in
+ * the middle, never joins the Tricky gauge, on the right, whatever their
+ * boxes (joined, the gauge was drawn at the middle anchor and the banner
+ * thrown to the right and back). */
+static int same_side(const Box *a, const Box *b, const View *v, int kind)
+{
+    float ha = a->y1 - a->y0, hb = b->y1 - b->y0, wa = a->x1 - a->x0, wb = b->x1 - b->x0;
+    float ox = (a->x1 < b->x1 ? a->x1 : b->x1) - (a->x0 > b->x0 ? a->x0 : b->x0);
+    float oy = (a->y1 < b->y1 ? a->y1 : b->y1) - (a->y0 > b->y0 ? a->y0 : b->y0);
+    if (kind == 2) return oy >= 0.75f * (ha < hb ? ha : hb);    /* text: on one line only */
+    if (side_of(a->x0, a->x1, v->x, v->w) != side_of(b->x0, b->x1, v->x, v->w)) return 0;
+    if (side_of(a->y0, a->y1, v->y, v->h) == side_of(b->y0, b->y1, v->y, v->h)) return 1;
+    return ox + 2.0f >= 0.5f * (wa < wb ? wa : wb) || oy + 2.0f >= 0.5f * (ha < hb ? ha : hb);
+}
+
+/* XBOX_FIX_HUD_ANCHOR=1, first pass: the pieces of one line (a banner's
+ * body, end caps and digits; a string's glyphs and shadows): text-high, rows
+ * in common over 3/4 of the lower one, a glyph's gap apart at most. They
+ * join first, whatever the thirds their own centres fall in, so that a wide
+ * banner across x = 427 is one element before the sides are compared. */
+static int one_line(const Box *a, const Box *b)
+{
+    float ha = a->y1 - a->y0, hb = b->y1 - b->y0;
+    float oy = (a->y1 < b->y1 ? a->y1 : b->y1) - (a->y0 > b->y0 ? a->y0 : b->y0);
+    if (ha > 64.0f || hb > 64.0f || oy < 0.75f * (ha < hb ? ha : hb)) return 0;
     return near_box(a, b) || near_box(b, a);
 }
 
-/* Anchor of a coordinate range [lo, hi] in the view's [o, o + len]: the
- * start, the end or the middle, by the third its centre falls in. */
+/* Anchor of a coordinate range [lo, hi] in the view's [o, o + len], by the
+ * third its centre c falls in: the start, the end or, in the middle third,
+ * the middle. With XBOX_FIX_HUD_ANCHOR (default) the middle keeps a plateau
+ * of half-width len / 16 around the view's centre (the centred texts), and
+ * at its two ends the anchor ramps linearly to the edge of the next third:
+ * an element that moves across a third (a trick's points falling off the
+ * screen, a score flying to its counter) moves on without a jump, a little
+ * faster while it crosses the ramp (the point drawn, a + (c - a) k, always
+ * follows c in its direction). An element over half the view long (the
+ * Tricky gauge, the progress bar: their box changes with what they show)
+ * never moves across: it keeps the anchor by thirds. */
 static float anchor_of(float lo, float hi, float o, float len)
 {
-    float c = 0.5f * (lo + hi);
+    float c = 0.5f * (lo + hi), t, r, d;
     if (c < o + len / 3.0f) return o;
     if (c > o + 2.0f * len / 3.0f) return o + len;
+    if (!s_slide || hi - lo >= 0.5f * len) return o + 0.5f * len;
+    t = len / 3.0f;
+    r = len / 6.0f - len / 16.0f;   /* ramp width */
+    d = c - o;
+    if (d < t + r) return o + 0.5f * len * (d - t) / r;
+    if (d > 2.0f * t - r) return o + len - 0.5f * len * (2.0f * t - d) / r;
     return o + 0.5f * len;
 }
 
@@ -470,12 +547,38 @@ static uint32_t q16(float v)
 
 static int uf_root(int *p, int i) { while (p[i] != i) i = p[i] = p[p[i]]; return i; }
 
+/* XBOX_HUD_DIAG=2: a race HUD record drawn unscaled (no box: a vertex
+ * missing or far off screen; or nearly the view's width), and a world marker
+ * whose two 2D buffers both give a box, different ones (the box is taken
+ * from the first). */
+static void diag_record(uint32_t gfx, uint32_t obj, int h, const Box *b)
+{
+    if (!box_valid(b)) {
+        fprintf(stderr, "[HUDDIAG] frame %u record %08X vt %08X seg %u: no box, drawn unscaled\n",
+                s_frame, obj, MEM32(obj), s_tag[h].seg);
+        return;
+    }
+    if (b->x1 - b->x0 >= 0.9f * s_tag[h].view.w) {
+        fprintf(stderr, "[HUDDIAG] frame %u record %08X seg %u: full width %.1f..%.1f x %.1f..%.1f, drawn unscaled\n",
+                s_frame, obj, s_tag[h].seg, b->x0, b->x1, b->y0, b->y1);
+        return;
+    }
+    if (MEM32(obj) == VT_WORLD_QUADS) {
+        Box a = box_from(gfx, obj, VT_WORLD_QUADS, VB_2D_ALT);
+        if (box_valid(&a) && (fabsf(a.x0 - b->x0) > 1.0f || fabsf(a.x1 - b->x1) > 1.0f ||
+                              fabsf(a.y0 - b->y0) > 1.0f || fabsf(a.y1 - b->y1) > 1.0f))
+            fprintf(stderr, "[HUDDIAG] frame %u record %08X seg %u: two boxes %.1f..%.1f x %.1f..%.1f"
+                    " / other buffer %.1f..%.1f x %.1f..%.1f\n", s_frame, obj, s_tag[h].seg,
+                    b->x0, b->x1, b->y0, b->y1, a.x0, a.x1, a.y0, a.y1);
+    }
+}
+
 static void work_out_list(uint32_t gfx, uint32_t base, uint32_t end)
 {
     static Box rb[MAX_REC], eb[MAX_REC];
     static int slot[MAX_REC], par[MAX_REC];
     uint32_t r;
-    int n = 0, i, j, ne = 0, changed;
+    int n = 0, i, j, ne = 0, changed, pass;
 
     for (r = base; r < end && n < MAX_REC; r += 0x18u) {
         int h = mark_find(MEM32(r), base);
@@ -483,23 +586,42 @@ static void work_out_list(uint32_t gfx, uint32_t base, uint32_t end)
         s_tag[h].frame = s_frame;
         s_tag[h].tag = s_tag[h].tag_y = 0;
         rb[n] = record_box(gfx, MEM32(r));
+        if (s_diag >= 2) diag_record(gfx, MEM32(r), h, &rb[n]);
         if (!box_valid(&rb[n])) continue;
         if (rb[n].x1 - rb[n].x0 >= 0.9f * s_tag[h].view.w) continue;  /* full width (fades, wipes): stretched */
         slot[n] = h;
         par[n] = n;
+        if (s_diag >= 4)
+            fprintf(stderr, "[HUDREC] frame %u list %u rec %d seg %u %.1f..%.1f x %.1f..%.1f\n", s_frame, s_lists, n,
+                    s_tag[h].seg, rb[n].x0, rb[n].x1, rb[n].y0, rb[n].y1);
         n++;
     }
     /* Elements: records joined by nearness, until nothing joins any more
      * (a string's shadow and its glyphs, from either end). */
     for (i = 0; i < n; i++) eb[i] = rb[i];
+    for (pass = s_side ? 0 : 1; pass < 2; pass++)
     do {
         changed = 0;
         for (i = 0; i < n; i++) {
             int ri = uf_root(par, i);
             for (j = i + 1; j < n; j++) {
                 int rj = uf_root(par, j);
-                if (ri == rj || s_tag[slot[ri]].seg != s_tag[slot[rj]].seg ||
-                    !joinable(&eb[ri], &eb[rj], s_tag[slot[i]].view.w)) continue;
+                int kind;
+                if (ri == rj || s_tag[slot[ri]].seg != s_tag[slot[rj]].seg) continue;
+                if (pass == 0) {
+                    if (!one_line(&eb[ri], &eb[rj]) || eb[ri].x1 - eb[rj].x0 > 0.6f * s_tag[slot[i]].view.w ||
+                        eb[rj].x1 - eb[ri].x0 > 0.6f * s_tag[slot[i]].view.w) continue;
+                } else if (!(kind = joinable(&eb[ri], &eb[rj], s_tag[slot[i]].view.w))) continue;
+                if (pass == 1 && (s_side || s_diag >= 3)) {
+                    int ok = same_side(&eb[ri], &eb[rj], &s_tag[slot[i]].view, kind);
+                    if (s_diag >= 3 && (!ok || side_of(eb[ri].x0, eb[ri].x1, 0.0f, 640.0f) != side_of(eb[rj].x0, eb[rj].x1, 0.0f, 640.0f) ||
+                                        side_of(eb[ri].y0, eb[ri].y1, 0.0f, 480.0f) != side_of(eb[rj].y0, eb[rj].y1, 0.0f, 480.0f)))
+                        fprintf(stderr, "[HUDJOIN] frame %u seg %u %s %.1f..%.1f x %.1f..%.1f + %.1f..%.1f x %.1f..%.1f -> %s\n",
+                                s_frame, s_tag[slot[ri]].seg, kind == 2 ? "text" : "stacked",
+                                eb[ri].x0, eb[ri].x1, eb[ri].y0, eb[ri].y1, eb[rj].x0, eb[rj].x1, eb[rj].y0, eb[rj].y1,
+                                ok || !s_side ? "joined" : "kept apart");
+                    if (s_side && !ok) continue;
+                }
                 par[rj] = ri;
                 if (eb[rj].x0 < eb[ri].x0) eb[ri].x0 = eb[rj].x0;
                 if (eb[rj].x1 > eb[ri].x1) eb[ri].x1 = eb[rj].x1;
@@ -891,7 +1013,12 @@ uint32_t hud_anchor_tag(uint32_t obj, uint32_t view, uint32_t *tag_y)
     if ((++s_found % 100000u) == 1u)
         fprintf(stderr, "[HUD] elements %llu, records marked %llu, drawn %llu, table full %llu, lists without HUD %llu ; %.4f ms per list\n",
                 s_elements, s_marked, s_found, s_full, s_stale, s_lists ? s_work_ms / (double)s_lists : 0.0);
-    if (s_tag[h].frame != s_frame) return 0;
+    if (s_tag[h].frame != s_frame) {
+        if (s_diag >= 2)
+            fprintf(stderr, "[HUDDIAG] frame %u record %08X seg %u: not in its list's records, drawn unscaled\n",
+                    s_frame, obj, s_tag[h].seg);
+        return 0;
+    }
     *tag_y = s_tag[h].tag_y;
     return s_tag[h].tag;
 }

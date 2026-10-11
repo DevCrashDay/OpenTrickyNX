@@ -18,8 +18,8 @@
 
 typedef struct LauncherConfig {
     char iso[MAX_PATH];   /* disc image; empty until the player chooses one */
-    char hdd[MAX_PATH];   /* emulated hard disk folder: relative to the exe, or absolute;
-                           * empty = automatic (launcher_save_kind) */
+    char hdd[MAX_PATH * 3]; /* emulated hard disk folder, UTF-8 as in settings.ini: relative
+                           * to the exe, or absolute; empty = automatic (launcher_save_kind) */
     int  width, height;   /* render resolution */
     int  aspect;          /* LAUNCHER_ASPECT_*: 4:3, 16:9 (the game's own widescreen
                            * mode), 21:9, 32:9, Auto (the monitor's shape) */
@@ -64,7 +64,21 @@ typedef struct LauncherConfig {
     int  save_backup;     /* XBOX_SAVE_BACKUP: 1 = a copy of the previous save is kept (default) */
     int  smooth_motion;   /* XBOX_FPS_INTERP: 1 = frames in between interpolated above 60 (default);
                            * a hidden setting, for troubleshooting */
+    int  smooth_legs;     /* XBOX_FPS_SMOOTH_LEGS: 1 = legs and board smoothed in a carve (display only;
+                           * ADVANCED > EXPERIMENTAL "Smoother legs in turns", default 0, 0 in every preset) */
+    int  unlock_all;      /* XBOX_UNLOCK_ALL: 1 = SaveProfile=unlockall, the game's own unlock-everything
+                           * cheat on and the saves in <save folder>\UnlockAll (default 0, My save) */
 } LauncherConfig;
+
+/* XBOX_UNLOCK_ALL as the game runs with it (after launcher_fork_apply). */
+int launcher_unlock_all(void);
+
+/* The separate save folder of the Unlock all profile, under the save folder. */
+#define LAUNCHER_UNLOCK_ALL_DIR "UnlockAll"
+
+/* Appends \UnlockAll to an absolute UTF-8 save folder and creates it, with
+ * its parents. 0 (nothing appended) when the result would not fit in `sz`. */
+int launcher_unlock_all_folder(char *save_u8, size_t sz);
 
 /* The XBE entry point this executable was recompiled from. A disc image is
  * accepted only if its default.xbe has the same one: the translated code is
@@ -79,14 +93,28 @@ void launcher_enable_dpi_awareness(void);
 void launcher_config_path(char *out, size_t out_sz);
 void launcher_log_path(char *out, size_t out_sz);     /* "<exe name>.log" beside settings.ini */
 /* Resolve the save folder setting to an absolute path (an empty setting is
- * automatic -- see launcher_save_kind). */
+ * automatic -- see launcher_save_kind), in UTF-8 for
+ * xbox_path_init: the saves are opened through the wide file calls, so any
+ * folder name works, accents and user names outside the code page included. */
 void launcher_hdd_path(const LauncherConfig *cfg, char *out, size_t out_sz);
 /* Which save folder applies. */
 enum { LAUNCHER_SAVES_CHOSEN,      /* SaveFolder set in the .ini */
-       LAUNCHER_SAVES_OLD_HDD,     /* hdd\ beside the game, with saves from an earlier version */
-       LAUNCHER_SAVES_PORTABLE,    /* Saves\ beside the game (portable.txt) */
+       LAUNCHER_SAVES_OLD_HDD,     /* hdd\ in the install root, with saves from an earlier version */
+       LAUNCHER_SAVES_PORTABLE,    /* Saves\ in the install root (portable.txt) */
        LAUNCHER_SAVES_DOCUMENTS }; /* Documents\My Games\SSX Tricky\Saves */
 int launcher_save_kind(const LauncherConfig *cfg);
+/* Saves that 0.1.1 and earlier wrote to a misnamed folder (an accent in the
+ * save folder's path, read the wrong way): copied into `save_u8` (UTF-8, from
+ * launcher_hdd_path) when it has none yet. The old folder is kept; one line
+ * in the log. */
+void launcher_migrate_saves(const char *save_u8);
+/* A path from settings.ini (disc image, HD pack): a relative one is relative
+ * to the install root (settings_install_root, the folder of OpenTricky.exe),
+ * not to the working folder; an absolute one or "" is copied as it is. */
+void launcher_resolve_path(const char *path, char *out, size_t out_sz);
+/* The install root, wide, without a trailing separator: where the game keeps
+ * what it writes (CrashReports\, Screenshots\) and finds OpenTricky.exe. */
+BOOL launcher_install_root_w(WCHAR *out, size_t n);
 /* Open a folder (created if missing) or a file in Explorer / its program. */
 void launcher_open_path(HWND owner, const char *path, BOOL folder);
 /* Display shapes. 21:9, 32:9 and Auto show the frame at the
@@ -102,6 +130,9 @@ enum { LAUNCHER_SYNC_LEGACY, LAUNCHER_SYNC_OFF, LAUNCHER_SYNC_VSYNC, LAUNCHER_SY
 double launcher_display_aspect(const LauncherConfig *cfg);  /* width / height shown */
 
 void launcher_config_load(LauncherConfig *cfg);     /* the registry's defaults when missing or old */
+/* The lines launcher_config_load printed (the file, how it was read, the
+ * keys of the lines not used), again: for the log file, opened after them. */
+void launcher_config_log(void);
 /* Write settings.ini (beside the game, else in Documents); FALSE if neither can be written. */
 BOOL launcher_config_save(const LauncherConfig *cfg);
 
