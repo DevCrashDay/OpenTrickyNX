@@ -1,0 +1,62 @@
+# Posts every published release (pre-releases included) to the #releases channel of
+# the OpenTricky Discord, in the same three lines as before:
+#
+#   📦 **OpenTricky 0.1.2 (unstable)**: *And the crowd goes wild!*
+#   <link to the release>
+#   Release notes and download on GitHub. Bring your own SSX Tricky Xbox disc (USA). <extra>
+#
+# The phrase comes from the release title ("OpenTricky 0.1.2: <phrase>"); <extra> is
+# optional, from a hidden line in the release notes:  <!-- discord: Coming from ... -->
+# The webhook URL is the repository secret DISCORD_RELEASES_WEBHOOK (never in the
+# repository). Without it, the job does nothing.
+
+name: Discord release post
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to #releases
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_RELEASES_WEBHOOK is not set: nothing posted."
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json, os, re, urllib.request
+
+          event = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8"))
+          rel = event["release"]
+          tag = rel.get("tag_name") or ""
+          name = rel.get("name") or tag
+          body = rel.get("body") or ""
+          unstable = rel.get("prerelease") or tag.endswith("-unstable")
+          version = re.sub(r"^v", "", tag)
+          version = re.sub(r"-unstable$", "", version)
+
+          head = f"📦 **OpenTricky {version}{' (unstable)' if unstable else ''}**"
+          if ": " in name:
+              head += f": *{name.split(': ', 1)[1].strip()}*"
+          extra = re.search(r"<!--\s*discord:\s*(.*?)\s*-->", body, re.S)
+          last = "Release notes and download on GitHub. Bring your own SSX Tricky Xbox disc (USA)."
+          if extra and extra.group(1).strip():
+              last += " " + " ".join(extra.group(1).split())
+          content = f"{head}\n<{rel['html_url']}>\n{last}"
+
+          data = json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode("utf-8")
+          req = urllib.request.Request(os.environ["WEBHOOK"], data=data, method="POST",
+                                       headers={"Content-Type": "application/json",
+                                                "User-Agent": "OpenTricky-release-post"})
+          with urllib.request.urlopen(req) as r:
+              print("Discord answered", r.status)
+          print(content)
+          PY
