@@ -112,7 +112,7 @@ The main ones, most serious first. The full list is on [opentricky.com/known-iss
 | **Frame rate drops when riders collide, and Snowdream runs slower than other tracks.** | No workaround yet. |
 | **Above 60 FPS, the controls answer one game step later** (about 17 ms). | Set *Frame rate limit* to *60* for the original game's exact timing. |
 | **Only Xbox-style (XInput) controllers are supported natively.** | Use Steam Input or DS4Windows, and choose *PlayStation modern* or *PS2 original* in *Button style*. |
-| **Steam Deck and Linux (Proton): 0.1.2 should start there now, but no player has confirmed it yet.** Real 5.1 speakers aren't tested either. | Reports are welcome. |
+| **Steam Deck: runs well with Proton 10, but Proton Experimental makes the frame rate drop a lot** (down to about 15 FPS). Linux desktops aren't confirmed yet, and real 5.1 speakers aren't tested. | In Steam, open the game's *Properties > Compatibility* and pick *Proton 10* instead of *Proton Experimental*, then choose the *Steam Deck* preset in the launcher. |
 
 ## FAQ
 

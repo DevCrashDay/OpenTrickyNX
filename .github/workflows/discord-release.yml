@@ -1,12 +1,11 @@
 # Posts every published release (pre-releases included) to the #releases channel of
 # the OpenTricky Discord, in the same three lines as before:
 #
-#   📦 **OpenTricky 0.1.2 (unstable)**: *And the crowd goes wild!*
+#   📦 **OpenTricky 0.1.2 (unstable)**
 #   <link to the release>
 #   Release notes and download on GitHub. Bring your own SSX Tricky Xbox disc (USA). <extra>
 #
-# The phrase comes from the release title ("OpenTricky 0.1.2: <phrase>"); <extra> is
-# optional, from a hidden line in the release notes:  <!-- discord: Coming from ... -->
+# <extra> is optional, from a hidden line in the release notes:  <!-- discord: ... -->
 # The webhook URL is the repository secret DISCORD_RELEASES_WEBHOOK (never in the
 # repository). Without it, the job does nothing.
 
@@ -44,8 +43,6 @@ jobs:
           version = re.sub(r"-unstable$", "", version)
 
           head = f"📦 **OpenTricky {version}{' (unstable)' if unstable else ''}**"
-          if ": " in name:
-              head += f": *{name.split(': ', 1)[1].strip()}*"
           extra = re.search(r"<!--\s*discord:\s*(.*?)\s*-->", body, re.S)
           last = "Release notes and download on GitHub. Bring your own SSX Tricky Xbox disc (USA)."
           if extra and extra.group(1).strip():
