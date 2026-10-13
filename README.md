@@ -75,7 +75,7 @@ Everything else: the [release notes](https://github.com/GiZcesi/OpenTricky/relea
 
 The game itself is `bin\SSX Tricky.exe`: it also starts the game straight away, with the same settings.
 
-**Coming from 0.1.2:** let the launcher update you. **Coming from 0.1.1:** install 0.1.3 fresh, in a new folder (the 0.1.1 launcher can't install it). Saves in `Documents\My Games\SSX Tricky\Saves` stay where they are; if your saves were inside the old folder (with `portable.txt`), copy its `Saves` folder and `portable.txt` into the new one. Don't copy `settings.ini`, choose your disc image again, make your shortcuts again (the game is now `bin\SSX Tricky.exe`), then delete the old folder.
+**Coming from 0.1.2:** let the launcher update you (it checks GitHub once a day: if no update shows up yet, close it, delete `update-cache.txt` next to `settings.ini`, and open it again). **Coming from 0.1.1:** install 0.1.3 fresh, in a new folder (the 0.1.1 launcher can't install it). Saves in `Documents\My Games\SSX Tricky\Saves` stay where they are; if your saves were inside the old folder (with `portable.txt`), copy its `Saves` folder and `portable.txt` into the new one. Don't copy `settings.ini`, choose your disc image again, make your shortcuts again (the game is now `bin\SSX Tricky.exe`), then delete the old folder.
 
 > [!NOTE]
 > Windows SmartScreen may warn you because the program isn't code-signed. If you trust the download, choose **More info → Run anyway**.
