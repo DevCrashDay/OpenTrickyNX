@@ -462,6 +462,12 @@ int nv2a_psh_generate(const Nv2aPshState *st, char *buf, int size)
         if (k >= 0 && k < 9 && (k < 7 || !st->simple))
             sbf(&code, "fragColor = float4(%s.rgb, 1.0);\n", regs[k]);
     }
+    if (st->flat)
+        sbf(&code, "fragColor = c0[8];\n");
+    if (st->alpha_t0z && st->flat)       /* a line along a debug edge: the last eighth of the ramp */
+        sbf(&code, "fragColor.a = saturate(i.t0.z * 8.0 - 7.0) * c0[8].a;\n");
+    else if (st->alpha_t0z)
+        sbf(&code, "fragColor.a = saturate(i.t0.z);\n");
     if (st->alpha_test && st->alpha_func != 7) {
         static const char *const ops[8] = { "", "<", "==", "<=", ">", "!=", ">=", "" };
         if (st->alpha_func == 0)

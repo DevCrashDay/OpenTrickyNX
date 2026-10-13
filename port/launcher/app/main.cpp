@@ -232,6 +232,7 @@ struct App {
     bool pad_is_ps = false;           /* the last controller pressed is a PlayStation one */
     Rml::String help_title, help_text, help_default, help_extra, saved_note;
     Rml::String ini_note;             /* above the rows: settings.ini was not read as written (empty: it was) */
+    bool deck_note = false;           /* ini_note says "Steam Deck detected": until the settings page is left or saved */
     bool help_pc = false, help_pending = false, pad_active = false, have_disc = false;
     Rml::String disc_state, disc_title, disc_note, track_name, version_text;
     /* the home page's disc panel (no good disc image) */
@@ -526,6 +527,24 @@ std::string ini_note_text(int status, int bad)
     }
 }
 
+/* No settings.ini yet: on a Steam Deck (under Proton) the launcher starts
+ * from the Steam Deck preset instead of the defaults (settings.h), writes it
+ * at once and says so above the settings rows, once. Elsewhere, nothing. */
+void first_start_preset()
+{
+    SettingsPlatform p;
+    char why[200];
+    settings_platform_probe(&p, nullptr);
+    if (settings_first_start_preset(&p, why, sizeof why) != SETTINGS_PRESET_STEAM_DECK) {
+        if (p.wine) otlog("settings: first start under Wine, not a Steam Deck (%s): defaults", why);
+        return;
+    }
+    settings_apply_preset(g.set, SETTINGS_PRESET_STEAM_DECK);
+    otlog("settings: first start on a Steam Deck (%s): Steam Deck preset", why);
+    g.ini_note = "Steam Deck detected: Steam Deck preset.";
+    g.deck_note = true;
+}
+
 std::vector<std::string> resolution_list()
 {
     std::vector<ResSize> sizes;
@@ -665,11 +684,21 @@ bool save_settings_file()
         return false;
     }
     otlog("settings written");
-    if (!g.ini_note.empty()) {        /* the file is now as this version writes it */
+    if (!g.ini_note.empty() && !g.deck_note) {   /* the file is now as this version writes it */
         g.ini_note = "";
         if (g.model) g.model.DirtyVariable("ini_note");
     }
     return true;
+}
+
+/* The "Steam Deck detected" note is seen once: gone when the player leaves
+ * the settings page or saves there. */
+void deck_note_seen()
+{
+    if (!g.deck_note) return;
+    g.deck_note = false;
+    g.ini_note = "";
+    if (g.model) g.model.DirtyVariable("ini_note");
 }
 
 void set_disc(const std::string &path)
@@ -1375,6 +1404,7 @@ bool focus_shown() { return g.pad_active || g.kbd_nav; }
 
 void show_page(const std::string &p)
 {
+    if (g.page == "settings" && p != "settings") deck_note_seen();
     g.page = p;
     Rml::ElementDocument *on = p == "settings" ? g.settings : g.home;
     Rml::ElementDocument *off = p == "settings" ? g.home : g.settings;
@@ -1622,6 +1652,7 @@ void save_settings()
     if (!save_settings_file()) {
         g.saved_note = "Could not save";
     } else {
+        deck_note_seen();
         g.saved_note = g.ini_in_docs ? "Saved in Documents\\My Games\\SSX Tricky" : "Saved";
         for (Row &r : g.rows)
             if (!r.is_group && r.id < SETTINGS_COUNT) r.changed = !settings_is_default(g.set, r.id);
@@ -2141,9 +2172,30 @@ void show_notes(const OtNotes &n, const std::string &version)
         for (const char *v : { "notes_version", "notes_title", "notes", "upd_view" }) g.model.DirtyVariable(v);
 }
 
+/* The installed version's "What's new": whatsnew.txt beside OpenTricky.exe
+ * (the release zip has it, so its text can change without a new launcher),
+ * else the block built in. A file for another version (left by an older
+ * install, or copied in) is not used. */
 void load_notes()
 {
-    g.installed_notes = ot_notes_parse(k_whatsnew);
+    const std::string file = g.base + "whatsnew.txt";
+    std::string text;
+    OtNotes n;
+    SDL_PathInfo pi;
+    if (ot_read_file(file, text, 64u << 10)) {
+        n = ot_notes_parse(text);
+        if (!n.ok) {
+            otlog("what's new: whatsnew.txt has no launcher block: the one built in");
+        } else if (!n.version.empty() && n.version != OT_VERSION_NUMBER && n.version != OT_VERSION) {
+            otlog("what's new: whatsnew.txt is for v%s, not this version: the one built in", n.version.c_str());
+            n = OtNotes();
+        } else {
+            otlog("what's new: whatsnew.txt");
+        }
+    } else if (SDL_GetPathInfo(file.c_str(), &pi)) {
+        otlog("what's new: whatsnew.txt could not be read (or is too large): the one built in");
+    }
+    g.installed_notes = n.ok ? n : ot_notes_parse(k_whatsnew);
     if (!g.installed_notes.ok) {
         otlog("what's new: no launcher block built in");
         return;
@@ -2586,12 +2638,14 @@ int main(int argc, char **argv)
         otlog("settings: %s", st >= 0 && st <= 4 ? names[st] : "?");
         if (bad) otlog("settings: %d line(s) not understood, not used: %s", bad, g.set->ignored);
         g.ini_note = ini_note_text(st, bad);
+        if (st == SETTINGS_LOAD_MISSING) first_start_preset();
     }
     int at = settings_locate(nullptr, nullptr, 1, path, sizeof path);
     if (at != SETTINGS_AT_NONE) g.ini_write = path;
     g.ini_in_docs = at == SETTINGS_AT_DOCUMENTS;
     if (g.iso.empty()) g.iso = settings_get(g.set, S_DISC_IMAGE);
     else settings_set(g.set, S_DISC_IMAGE, g.iso.c_str());
+    if (g.deck_note) save_settings_file();   /* the Steam Deck preset, written at once: one detection only */
     g.preset = settings_current_preset(g.set);
     for (int t = 0; t < SETTINGS_TAB_COUNT; t++) g.tabs.push_back(settings_tab_name(t));
     for (int p = 0; p < SETTINGS_PRESET_CUSTOM + 1; p++) g.presets.push_back(settings_preset_name(p));

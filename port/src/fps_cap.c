@@ -23,6 +23,12 @@ static int s_in_extra;          /* an extra render is in progress */
  * and none was ever heard. The generated call (fork pass fix_crowdemit.py) asks this. */
 extern int g_fix_crowdemit;
 int fps_cap_skip_emitters(void) { return g_fix_crowdemit && s_in_extra; }
+/* Fork: the audio update (0x115EE0, called by every render) steps the mixer's volume
+ * fades (0x10E280) by 1/60 of their length per call. Once they work (fix_fadeparity.py),
+ * an extra render would step them again: skipped there, so a fade lasts as long as on
+ * the console (one step per tick). */
+extern int g_fix_fade;
+int fps_cap_skip_fade(void) { return g_fix_fade && s_in_extra; }
 static int s_dup_k;             /* DUP mode: index of the render after the normal one */
 static int s_fix_hud;           /* XBOX_FIX_HUD_RATE (default 1): overlay animations at tick rate */
 

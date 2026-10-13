@@ -1046,3 +1046,78 @@ int settings_locate(const char *game_dir, const char *docs_dir, int for_write, c
         return snprintf(out, out_sz, "%s", df), SETTINGS_AT_DOCUMENTS;
     return SETTINGS_AT_NONE;
 }
+
+/* ── The first start on a Steam Deck ───────────────────────────────── */
+
+/* The first line of a small text file in `dir`, without surrounding blanks;
+ * "" when it cannot be read. */
+static void read_first_line(const char *dir, const char *name, char *out, size_t out_sz)
+{
+    char path[SETTINGS_VALUE_MAX + 64], *a, *b;
+    FILE *f;
+    size_t n;
+
+    out[0] = 0;
+    if (!join(path, sizeof path, dir, name) || !(f = u8_fopen(path, "rb"))) return;
+    n = fread(out, 1, out_sz - 1, f);
+    fclose(f);
+    out[n] = 0;
+    out[strcspn(out, "\r\n")] = 0;
+    for (a = out; *a == ' ' || *a == '\t'; a++) {}
+    for (b = a + strlen(a); b > a && (b[-1] == ' ' || b[-1] == '\t'); b--) {}
+    *b = 0;
+    memmove(out, a, (size_t)(b - a) + 1);
+}
+
+void settings_platform_probe(SettingsPlatform *p, const char *root)
+{
+    const char *test = getenv("XBOX_TEST_DECK_ROOT"), *deck = getenv("SteamDeck");
+    char dmi[SETTINGS_VALUE_MAX];
+
+    memset(p, 0, sizeof *p);
+#ifdef _WIN32
+    {
+        HMODULE nt = GetModuleHandleA("ntdll.dll");
+        p->wine = nt && GetProcAddress(nt, "wine_get_version") != NULL;
+    }
+#endif
+    if (test && test[0]) {                      /* test only: Wine, and this folder as its root */
+        p->wine = 1;
+        if (!root) root = test;
+    }
+    if (deck) snprintf(p->steamdeck, sizeof p->steamdeck, "%s", deck);
+    /* Never Z:\ on Windows itself: there it may be any drive, even a network one. */
+#ifdef _WIN32
+    if (!root && p->wine) root = "Z:\\";
+    if (!root || !join(dmi, sizeof dmi, root, "sys\\class\\dmi\\id")) return;
+#else
+    if (!root && p->wine) root = "/";
+    if (!root || !join(dmi, sizeof dmi, root, "sys/class/dmi/id")) return;
+#endif
+    read_first_line(dmi, "sys_vendor", p->vendor, sizeof p->vendor);
+    if (!p->vendor[0]) read_first_line(dmi, "board_vendor", p->vendor, sizeof p->vendor);
+    read_first_line(dmi, "product_name", p->product, sizeof p->product);
+    if (!p->product[0]) read_first_line(dmi, "board_name", p->product, sizeof p->product);
+}
+
+int settings_first_start_preset(const SettingsPlatform *p, char *why, size_t why_sz)
+{
+    int deck = 0;
+    char tmp[200];
+
+    if (!p->wine) {
+        snprintf(tmp, sizeof tmp, "not under Wine");
+    } else if (!strcmp(p->steamdeck, "0")) {
+        snprintf(tmp, sizeof tmp, "SteamDeck=0");
+    } else if (p->vendor[0]) {
+        deck = ieq(p->vendor, "Valve") && (ieq(p->product, "Jupiter") || ieq(p->product, "Galileo"));
+        snprintf(tmp, sizeof tmp, "DMI \"%s\" \"%s\"%s", p->vendor, p->product, deck ? "" : ": not a Steam Deck");
+    } else if (!strcmp(p->steamdeck, "1")) {
+        deck = 1;
+        snprintf(tmp, sizeof tmp, "SteamDeck=1, no DMI");
+    } else {
+        snprintf(tmp, sizeof tmp, "no DMI, no SteamDeck=1");
+    }
+    if (why && why_sz) snprintf(why, why_sz, "%s", tmp);
+    return deck ? SETTINGS_PRESET_STEAM_DECK : -1;
+}

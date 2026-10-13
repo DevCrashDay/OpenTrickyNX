@@ -115,6 +115,7 @@ set(GAME_SOURCES
     src/fps_cap.c
     src/aspect.c
     src/drawdist.c
+    src/terrain_seams.c
     src/pumplag.c
     src/strmwalk.c
     src/chantfix.c

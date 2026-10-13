@@ -426,9 +426,40 @@ void nv2a_drawlog_arm(int frames)
  * memory 1:1 and the top nibble carries the memory-space tag, so mask it off.
  * Returns NULL when the span would leave guest RAM -- a stale or uninitialised
  * stream offset must not fault the process. */
+/* Draw substitution window (pgraph_d3d11_set_draw_subst): while a substituted
+ * draw runs, offsets in [PG_SUBST_TAG, PG_SUBST_TAG + size) -- past any guest
+ * RAM, where va_ptr would fail anyway -- are served from a host buffer. */
+#define PG_SUBST_TAG 0x0FF00000u
+static const uint8_t *g_subst_host;
+static uint32_t g_subst_size;
+static pgraph_draw_subst_fn g_subst_fn;
+/* Flat-colour pass of a substituted draw's overlay: the pixel shader returns
+ * g_flat_rgba (debug views only). */
+static int g_flat_on;
+static float g_flat_rgba[4];
+/* Blend pass of a substituted draw's overlay: alpha from oT0.z. */
+static int g_alpha_t0z;
+
+void pgraph_d3d11_set_draw_subst(pgraph_draw_subst_fn fn) { g_subst_fn = fn; }
+
+void pgraph_d3d11_tex_state(int stage, uint32_t *format, uint32_t *filter, uint32_t *address, uint32_t *control0, int *enabled)
+{
+    if (stage < 0 || stage > 3) { *format = *filter = *address = *control0 = 0; *enabled = 0; return; }
+    *format = g_pg.tex[stage].format; *filter = g_pg.tex[stage].filter; *address = g_pg.tex[stage].address;
+    *control0 = g_pg.tex[stage].control0; *enabled = g_pg.tex[stage].enabled;
+}
+uint32_t pgraph_d3d11_tex_address(int stage) { return stage >= 0 && stage < 4 ? g_pg.tex[stage].address : 0u; }
+void pgraph_d3d11_tex_binding(int stage, uint32_t *offset, uint32_t *format)
+{
+    *offset = stage >= 0 && stage < 4 ? g_pg.tex[stage].offset : 0;
+    *format = stage >= 0 && stage < 4 ? g_pg.tex[stage].format : 0;
+}
+
 static const uint8_t *va_ptr(uint32_t offset, uint32_t need)
 {
     uint32_t off = offset & 0x0FFFFFFFu;
+    if (g_subst_host && off - PG_SUBST_TAG < g_subst_size)
+        return need <= g_subst_size - (off - PG_SUBST_TAG) ? g_subst_host + (off - PG_SUBST_TAG) : NULL;
     if (!g_pg_mem_base || !g_pg_mem_size || need == 0)
         return NULL;
     if (off >= g_pg_mem_size || need > g_pg_mem_size - off)
@@ -3604,6 +3635,8 @@ static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count
             }
             ps.show = (uint8_t)show;
         }
+        ps.flat = (uint8_t)(g_flat_on != 0);
+        ps.alpha_t0z = (uint8_t)(g_alpha_t0z != 0);
         {
             /* XBOX_NV2A_WCLIP=0 (diagnostic) ignores the window clip. */
             static int wclip_on = -1;
@@ -3634,6 +3667,7 @@ static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count
         ARGB4(pc.c0[8], g_pg.specular_fog_factor[0]);
         ARGB4(pc.c1[8], g_pg.specular_fog_factor[1]);
         #undef ARGB4
+        if (g_flat_on) memcpy(pc.c0[8], g_flat_rgba, sizeof g_flat_rgba);
         pc.fog_color[0] = (g_pg.fog_color & 0xFF) / 255.0f;          /* ABGR */
         pc.fog_color[1] = ((g_pg.fog_color >> 8) & 0xFF) / 255.0f;
         pc.fog_color[2] = ((g_pg.fog_color >> 16) & 0xFF) / 255.0f;
@@ -4005,6 +4039,110 @@ static void draw_arrays(uint32_t start, uint32_t count)
     }
 }
 
+/* A program draw handed to the substitution filter first: when it takes it,
+ * the arrays that start in the replaced span read the filter's host vertices
+ * (same layout and stride) and its index list is drawn instead, then the
+ * overlays it asked for (triangle lists over the same vertices, flat colour,
+ * alpha blended, depth tested as the draw, no depth write). */
+static int subst_draw(void)
+{
+    PgraphDrawSubst sub;
+    uint32_t saved[16], saved_addr[4], a, k;
+    if (!g_subst_fn) return 0;
+    {
+        uint32_t offs[16], fmts[16];
+        for (a = 0; a < 16; a++) { offs[a] = g_pg.vattr[a].offset; fmts[a] = g_pg.vattr[a].format; }
+        memset(&sub, 0, sizeof sub);
+        if (!g_subst_fn(g_pg.draw_mode, g_pg.idx, g_pg.idx_count, offs, fmts, &sub)) return 0;
+    }
+    if (!sub.host || !sub.size || !sub.indices || !sub.count || sub.span == 0) return 0;
+    for (a = 0; a < 16; a++) {
+        uint32_t off = g_pg.vattr[a].offset & 0x0FFFFFFFu;
+        saved[a] = g_pg.vattr[a].offset;
+        if (((g_pg.vattr[a].format >> 8) & 0xFFFFFFu) && off - sub.base < sub.span)
+            g_pg.vattr[a].offset = PG_SUBST_TAG + (off - sub.base);
+    }
+    g_subst_host = sub.host;
+    g_subst_size = sub.size;
+    {
+        uint32_t st;
+        for (st = 0; st < 4; st++) {
+            saved_addr[st] = g_pg.tex[st].address;
+            if (sub.address[st]) g_pg.tex[st].address = sub.address[st];
+        }
+    }
+    draw_program(sub.indices, 0, sub.count);
+    for (a = 0; a < 4; a++) g_pg.tex[a].address = saved_addr[a];   /* the main pass only */
+    if (sub.n_overlay) {
+        uint32_t mode = g_pg.draw_mode, sf = g_pg.blend_sfactor, df = g_pg.blend_dfactor;
+        int be = g_pg.blend_enable, dm = g_pg.depth_mask, cu = g_pg.cull_enable;
+        g_pg.draw_mode = 5;
+        g_pg.blend_enable = 1; g_pg.blend_sfactor = 0x302; g_pg.blend_dfactor = 0x303;
+        g_pg.depth_mask = 0; g_pg.cull_enable = 0;
+        for (k = 0; k < sub.n_overlay && k < PGRAPH_SUBST_OVERLAYS; k++) {
+            const PgraphDrawOverlay *ov = &sub.overlay[k];
+            if (!ov->indices || ov->count < 3) continue;
+            if (ov->blend) {
+                /* the title's program plus "mov oT0.z, v15.x", v15 = the weights */
+                uint32_t so[4], sfm[4], va_o = g_pg.vattr[15].offset, va_f = g_pg.vattr[15].format, st;
+                int len = g_pg.prog_len, fin;
+                uint16_t inp = g_pg.prog_inputs;
+                uint64_t hash = g_pg.prog_hash;
+                vshcpu_insn *ins;
+                if (len <= 0 || len >= VSHCPU_SLOTS || (inp & 0x8000u) ||
+                    ov->weights + 4u * 64u > sub.size) continue;
+                fin = g_pg.prog_dec[len - 1].final;
+                ins = &g_pg.prog_dec[len];
+                memset(ins, 0, sizeof *ins);
+                ins->mac = 1;                       /* MOV */
+                ins->vidx = 15;
+                ins->src[0].mux = 2;                /* v */
+                ins->o_mask = 2;                    /* z */
+                ins->orb = 1;                       /* output register */
+                ins->out_addr = 9;                  /* oT0 */
+                ins->final = 1;
+                g_pg.prog_dec[len - 1].final = 0;
+                g_pg.prog_len = len + 1;
+                g_pg.prog_inputs = (uint16_t)(inp | 0x8000u);
+                g_pg.prog_hash = (hash ^ 0x5EA3B1E7D0C4A1F5ull) * 1099511628211ull;
+                g_pg.vattr[15].offset = PG_SUBST_TAG + ov->weights;
+                g_pg.vattr[15].format = (4u << 8) | (1u << 4) | 2u;     /* float1, stride 4 */
+                for (st = 0; st < 4; st++) {
+                    so[st] = g_pg.tex[st].offset; sfm[st] = g_pg.tex[st].format;
+                    if (ov->tex_offset[st]) { g_pg.tex[st].offset = ov->tex_offset[st]; g_pg.tex[st].format = ov->tex_format[st]; }
+                    if (ov->address[st]) g_pg.tex[st].address = ov->address[st];
+                }
+                g_alpha_t0z = 1;
+                if (ov->rgba[3] > 0.0f) {           /* debug line: flat colour, alpha from the weights */
+                    memcpy(g_flat_rgba, ov->rgba, sizeof g_flat_rgba);
+                    g_flat_on = 1;
+                }
+                draw_program(ov->indices, 0, ov->count);
+                g_alpha_t0z = 0;
+                g_flat_on = 0;
+                for (st = 0; st < 4; st++) { g_pg.tex[st].offset = so[st]; g_pg.tex[st].format = sfm[st]; g_pg.tex[st].address = saved_addr[st]; }
+                g_pg.vattr[15].offset = va_o; g_pg.vattr[15].format = va_f;
+                g_pg.prog_dec[len - 1].final = (uint8_t)fin;
+                memset(ins, 0, sizeof *ins);
+                g_pg.prog_len = len; g_pg.prog_inputs = inp; g_pg.prog_hash = hash;
+                continue;
+            }
+            memcpy(g_flat_rgba, ov->rgba, sizeof g_flat_rgba);
+            g_flat_on = 1;
+            draw_program(ov->indices, 0, ov->count);
+            g_flat_on = 0;
+        }
+        g_pg.draw_mode = mode;
+        g_pg.blend_enable = be; g_pg.blend_sfactor = sf; g_pg.blend_dfactor = df;
+        g_pg.depth_mask = dm; g_pg.cull_enable = cu;
+    }
+    g_subst_host = NULL;
+    g_subst_size = 0;
+    for (a = 0; a < 16; a++) g_pg.vattr[a].offset = saved[a];
+    for (a = 0; a < 4; a++) g_pg.tex[a].address = saved_addr[a];
+    return 1;
+}
+
 static void submit_draw(void)
 {
     if (g_pg.inline_count == 0 || g_pg.vert_stride == 0)
@@ -4358,9 +4496,10 @@ int pgraph_d3d11_method(int subchannel, uint32_t method, uint32_t param)
         if (param == 0) {
             /* END: submit accumulated vertices */
             if (g_pg.idx_count) {
-                if (vsh_active())
-                    draw_program(g_pg.idx, 0, g_pg.idx_count);
-                else
+                if (vsh_active()) {
+                    if (!subst_draw())
+                        draw_program(g_pg.idx, 0, g_pg.idx_count);
+                } else
                     g_vs.raw_indexed++;   /* fixed-function indexed: no transform yet */
                 g_pg.idx_count = 0;
             }

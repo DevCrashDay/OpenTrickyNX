@@ -99,6 +99,13 @@ static const char g_prelude[] =
     "    float4 pt : PTS;    /* centre x, y in title pixels, half size */\n"
     "#endif\n"
     "};\n"
+    /* IEEE classes read from the bits: the same result as isnan / isinf /
+     * isfinite, which not every HLSL compiler has (vkd3d-shader, the one of
+     * Wine and Proton, has no isnan or isfinite), and integer tests that no
+     * compiler or driver can fold away as it could a float self-compare. */
+    "bool nv_isnan(float x) { return (asuint(x) & 0x7FFFFFFF) > 0x7F800000; }\n"
+    "bool nv_isinf(float x) { return (asuint(x) & 0x7FFFFFFF) == 0x7F800000; }\n"
+    "bool nv_isfinite(float x) { return (asuint(x) & 0x7F800000) != 0x7F800000; }\n"
     "float4 cread(int n) { return (n >= 0 && n < 192) ? c[n] : float4(0, 0, 0, 0); }\n"
     "float4 mul0(float4 a, float4 b) {\n"
     "    float4 p = a * b;\n"
@@ -113,15 +120,15 @@ static const char g_prelude[] =
     "    float f, m = fogp.x;\n"
     "    if (m == 0) return 1;\n"
     "    if (m == 2 || m == 4) d = abs(d);\n"
-    "    if ((m == 1 || m == 3) && isinf(d)) d = 0;\n"
+    "    if ((m == 1 || m == 3) && nv_isinf(d)) d = 0;\n"
     "    if (m <= 2) f = fogp.y + d * fogp.z - 1.0;\n"
     "    else if (m <= 4) f = fogp.y + exp2(d * fogp.z * 16.0) - 1.5;\n"
     "    else f = fogp.y + exp2(-d * d * fogp.z * fogp.z * 32.0) - 1.5;\n"
-    "    if (isnan(f)) return 1;\n"
+    "    if (nv_isnan(f)) return 1;\n"
     "    return saturate(f);\n"
     "}\n"
-    "float4 nan1(float4 v) { return float4(isnan(v.x) ? 1 : v.x, isnan(v.y) ? 1 : v.y,\n"
-    "                                      isnan(v.z) ? 1 : v.z, isnan(v.w) ? 1 : v.w); }\n";
+    "float4 nan1(float4 v) { return float4(nv_isnan(v.x) ? 1 : v.x, nv_isnan(v.y) ? 1 : v.y,\n"
+    "                                      nv_isnan(v.z) ? 1 : v.z, nv_isnan(v.w) ? 1 : v.w); }\n";
 
 int nv2a_vsh_hlsl(const vshcpu_insn *p, int n, uint16_t inputs, const uint8_t kind[16],
                   int points, char *buf, int cap)
@@ -200,7 +207,7 @@ int nv2a_vsh_hlsl(const vshcpu_insn *p, int n, uint16_t inputs, const uint8_t ki
         case ILU_MOV: sb(&b, "    u = C;\n"); break;
         case ILU_RCP: sb(&b, "    u = (1.0 / C.x).xxxx;\n"); break;
         case ILU_RCC: sb(&b, "    u = clamp_away(1.0 / C.x).xxxx;\n"); break;
-        case ILU_RSQ: sb(&b, "    u = (C.x == 0 ? asfloat(0x7F800000) : isinf(C.x) ? 0 : 1.0 / sqrt(abs(C.x))).xxxx;\n"); break;
+        case ILU_RSQ: sb(&b, "    u = (C.x == 0 ? asfloat(0x7F800000) : nv_isinf(C.x) ? 0 : 1.0 / sqrt(abs(C.x))).xxxx;\n"); break;
         case ILU_EXP: sb(&b, "    u = float4(exp2(floor(C.x)), C.x - floor(C.x), exp2(C.x), 1);\n"); break;
         case ILU_LOG:
             sb(&b, "    { float x = abs(C.x);\n"
@@ -254,7 +261,7 @@ int nv2a_vsh_hlsl(const vshcpu_insn *p, int n, uint16_t inputs, const uint8_t ki
        "    if (w >= 0) w = clamp(w, 5.421011e-20, 1.8446744e19); else w = clamp(w, -1.8446744e19, -5.421011e-20);\n"
        "    float rhw = 1.0 / w, wc = 1.0 / rhw;\n"
        "    o.pos = float4((x / screen.x * 2.0 - 1.0) * wc, (1.0 - y / screen.y * 2.0) * wc, z * wc, wc);\n"
-       "    if (!(isfinite(x) && isfinite(y) && isfinite(z) && isfinite(rhw))) o.pos = asfloat(0x7FC00000).xxxx;\n"
+       "    if (!(nv_isfinite(x) && nv_isfinite(y) && nv_isfinite(z) && nv_isfinite(rhw))) o.pos = asfloat(0x7FC00000).xxxx;\n"
        "    o.d0 = nan1(O3);\n"
        "    o.d1 = nan1(O4);\n"
        "    if (flags.x == 0) o.d1 = float4(0, 0, 0, 1);\n"

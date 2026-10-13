@@ -49,6 +49,14 @@ OtSigResult ot_sign_check(const void *msg, size_t msg_n, const void *sig, size_t
 /* A short English text for the log. */
 const char *ot_sign_text(OtSigResult r);
 
+/* 1 when zip_name (the zip the signed SHA256SUMS.txt names) is the release
+ * of version (the tag without its "v"), so that an older signed zip under a
+ * newer tag is refused: zip_name must hold "-<x.y.z>-", the version's number
+ * without its suffix ("0.1.3-unstable" and "0.1.3" both want "-0.1.3-").
+ * A version that is not x.y.z[-...|+...] is looked for whole; an empty or
+ * NULL version is not checked (1). */
+int ot_sign_zip_is_version(const char *zip_name, const char *version);
+
 #ifdef __cplusplus
 }
 #endif

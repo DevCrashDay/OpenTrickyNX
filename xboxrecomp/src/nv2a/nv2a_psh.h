@@ -31,6 +31,8 @@ typedef struct {
     uint8_t  simple;                 /* XBOX_NV2A_PSH=0: t0 * v0, the old look */
     uint8_t  show;                   /* XBOX_NV2A_PSH_SHOW: 1+ index into show_regs (diagnostic) */
     uint8_t  window_clip;            /* 0 off, 1 inclusive, 2 exclusive (SET_WINDOW_CLIP_*) */
+    uint8_t  flat;                   /* 1: return c0[8] (overlay of a substituted draw, debug views) */
+    uint8_t  alpha_t0z;              /* 1: alpha = oT0.z (blend overlay of a substituted draw) */
 } Nv2aPshState;
 
 /* Pixel-shader constant buffer; matches the cbuffer the generator emits. */

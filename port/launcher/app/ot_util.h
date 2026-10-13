@@ -27,7 +27,8 @@
  *   -->
  *
  * One line per item; sections show in the order FIXES, NEW, BETTER. The
- * installed version's block is built into the launcher (whatsnew.txt). */
+ * installed version's block is whatsnew.txt beside the launcher, or the
+ * copy built into it (port/launcher/app/whatsnew.txt) without that file. */
 struct OtNoteSection {
     std::string name;                   /* "FIXES", "NEW", "BETTER" */
     std::vector<std::string> items;

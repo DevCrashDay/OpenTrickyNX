@@ -37,6 +37,16 @@ static void expect(const char *what, OtSigResult got, OtSigResult want)
     if (got != want) fails++;
 }
 
+/* The zip's name against the tag's version (ot_sign_zip_is_version). */
+static void expect_zip(const char *zip, const char *version, int want)
+{
+    int got = ot_sign_zip_is_version(zip, version);
+    char what[96];
+    snprintf(what, sizeof what, "%s for \"%s\"", zip, version);
+    printf("%-60s %s (%s)\n", what, got == want ? "ok" : "FAIL", got ? "accepted" : "refused");
+    if (got != want) fails++;
+}
+
 static int read_all(const char *path, uint8_t **data, size_t *n)
 {
     FILE *f = fopen(path, "rb");
@@ -119,8 +129,27 @@ int main(int argc, char **argv)
 
     static const uint8_t zero[32];
     expect("no key built in: not checked", ot_sign_check(sums, n, sig, 64, zero), OT_SIG_NO_KEY);
-    /* The launcher as shipped today: the key is still all zero. */
-    printf("built-in key: %s\n", ot_sign_key_set(ot_release_key) ? "set" : "not set yet (SHA-256 only)");
+
+    /* The zip of a signed release against its tag's version (the tag without
+     * "v"): the number only, the channel suffix ignored. */
+    expect_zip("OpenTricky-0.1.3-win64.zip", "0.1.3", 1);                    /* tag without a suffix */
+    expect_zip("OpenTricky-0.1.3-unstable-win64.zip", "0.1.3-unstable", 1);  /* named as the tag */
+    expect_zip("OpenTricky-0.1.3-win64.zip", "0.1.3-unstable", 1);           /* refused by the 0.1.2 launcher */
+    expect_zip("OpenTricky-0.1.3-unstable-win64.zip", "0.1.3", 1);
+    expect_zip("OpenTricky-0.1.3-win64.zip", "0.1.3+build.7", 1);
+    expect_zip("OpenTricky-0.1.2-win64.zip", "0.1.3-unstable", 0);           /* older zip, newer tag */
+    expect_zip("OpenTricky-0.1.2-unstable-win64.zip", "0.1.3-unstable", 0);
+    expect_zip("OpenTricky-0.1.2-win64.zip", "0.1.3", 0);
+    expect_zip("OpenTricky-0.1.3-win64.zip", "0.1.30", 0);
+    expect_zip("OpenTricky-0.1.30-win64.zip", "0.1.3", 0);
+    expect_zip("OpenTricky-10.1.3-win64.zip", "0.1.3", 0);
+    expect_zip("OpenTricky-0.1.3.zip", "0.1.3", 0);                          /* no "-" after the number */
+    expect_zip("OpenTricky-nightly-win64.zip", "nightly", 1);                /* not x.y.z: looked for whole */
+    expect_zip("OpenTricky-0.1.3-win64.zip", "nightly", 0);
+    expect_zip("OpenTricky-0.1.3-win64.zip", "", 1);                         /* no version known: not checked */
+
+    /* The launcher holds the project's key since 0.1.2 (ot_release_key.h). */
+    printf("built-in key: %s\n", ot_sign_key_set(ot_release_key) ? "set" : "not set (SHA-256 only)");
 
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return fails ? 1 : 0;

@@ -8,6 +8,7 @@
 #include <math.h>
 #include "recomp/recomp_types.h"
 #include "drawdist.h"
+#include "terrain_seams.h"
 
 void sub_000DE230(void);    /* TerrainNode_TickVisibilityUpdate (thiscall, ret) */
 void sub_000FFB50(void);    /* SceneView_RenderPass */
@@ -249,6 +250,7 @@ void hook_drawdist_000F8F10(void)
 
 void hook_drawdist_000F8BA0(void)
 {
+    uint32_t obj = g_ecx, slot = MEM32(g_esp + 4u), patch = MEM32(g_esp + 8u);
     if (g_drawdist_level || s_log) {
         uint32_t vb = MEM32(g_esp + 4u);
         unsigned h = (vb / 48u) & 4095u, i;
@@ -259,6 +261,8 @@ void hook_drawdist_000F8BA0(void)
         }
     }
     sub_000F8BA0();
+    /* texture seams between patches (terrain_seams.h): which patch this slot holds */
+    if (g_terrain_seams) terrain_seams_note(obj, slot, patch);
 }
 
 static void fx_seen(int k, uint32_t obj, uint32_t lo, uint32_t hi)
@@ -329,7 +333,9 @@ void drawdist_init(void)
 
 void (*drawdist_lookup(unsigned int xbox_va))(void)
 {
-    if (!g_drawdist_level && !s_log) return 0;
+    /* the terrain seam options (terrain_seams.h) need the patch hook alone */
+    if (!g_drawdist_level && !s_log)
+        return xbox_va == 0x000F8BA0u && g_terrain_seams ? hook_drawdist_000F8BA0 : 0;
     if (xbox_va == 0x000DE230u) return hook_drawdist_000DE230;
     if (xbox_va == 0x000FFB50u) return hook_drawdist_000FFB50;
     if (xbox_va == 0x000F8F10u) return hook_drawdist_000F8F10;

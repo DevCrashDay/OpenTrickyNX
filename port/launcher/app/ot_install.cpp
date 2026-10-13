@@ -585,8 +585,9 @@ void ot_install_update(const OtInstallRequest &req, OtInstallState &st)
         OtSigResult r = ot_sign_check(sums.body.data(), sums.body.size(), sig.body.data(), sig.body.size(), ot_release_key);
         if (r != OT_SIG_OK) { set_fail(st, "signature", ot_sign_text(r)); return finish(false); }
         /* The signed list names the zip, and the zip's name its version: an
-         * older signed release under a newer tag is refused. */
-        if (!req.version_new.empty() && req.zip_name.find("-" + req.version_new + "-") == std::string::npos) {
+         * older signed release under a newer tag is refused. The tag's
+         * suffix ("-unstable") is not part of the version (ot_sign.h). */
+        if (!ot_sign_zip_is_version(req.zip_name.c_str(), req.version_new.c_str())) {
             set_fail(st, "signature", req.zip_name + " is not version " + req.version_new);
             return finish(false);
         }

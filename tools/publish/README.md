@@ -4,7 +4,8 @@ The launcher installs an update only when the release's `SHA256SUMS.txt`
 carries a valid Ed25519 signature (`SHA256SUMS.txt.sig`, 64 raw bytes,
 detached, RFC 8032), made with the project's key whose **public** half is
 built into the launcher (`port/launcher/app/ot_release_key.h`).
-While that file is all zeros, the launcher keeps the SHA-256 check only.
+Launchers since 0.1.2 hold that key: their updater refuses a release
+without a valid `SHA256SUMS.txt.sig`.
 
 ## Once: the key (never in git)
 
@@ -24,7 +25,12 @@ and a rebuilt launcher are needed (launchers already installed will refuse it).
 ```sh
 python3 tools/publish/sign_release.py sign --key ~/opentricky-release.pem \
         <release dir>/SHA256SUMS.txt          # -> SHA256SUMS.txt.sig
+python3 tools/publish/sign_release.py verify <release dir>/SHA256SUMS.txt
 ```
+
+The zip's name holds the release's GitHub tag without its `v`
+(`v0.1.3-unstable` -> `OpenTricky-0.1.3-unstable-win64.zip`): the 0.1.2
+launcher refuses a signed release whose zip name does not hold `-<tag without v>-`.
 
 Upload the three assets: the zip, `SHA256SUMS.txt` and `SHA256SUMS.txt.sig`.
 Don't change `SHA256SUMS.txt` after signing it (not even a line ending).

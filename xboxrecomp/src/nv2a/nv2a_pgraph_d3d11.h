@@ -47,6 +47,53 @@ void pgraph_d3d11_set_chyron_scroll(uint32_t frame);
  * Called by the push buffer consumer, which already holds the mapping. */
 void pgraph_d3d11_set_mem_base(void *base, uint32_t size);
 
+/* Draw substitution (a title-side filter, e.g. terrain patches). Called on the
+ * pump thread for every vertex-program indexed draw, with its primitive mode,
+ * index list and the 16 vertex array offsets / formats. Returning 1 with `out`
+ * filled draws out->indices instead, and every strided array whose offset
+ * (masked to 28 bits) lies in [out->base, out->base + out->span) reads
+ * out->host + (offset - out->base) -- same layout and stride -- for that draw
+ * only. Up to PGRAPH_SUBST_OVERLAYS overlays (debug views) follow: triangle
+ * lists over the same vertices in one flat colour, alpha blended, depth tested
+ * as the draw, depth not written. A blend overlay (blend = 1) is drawn instead
+ * with the title's own shading and other textures on some stages (tex_offset /
+ * tex_format, 0 = the draw's own), its alpha taken per vertex from the float at
+ * host + weights + 4 * index: the program gets one more instruction that
+ * carries that value into oT0.z (unused by 2D lookups) and the pixel shader
+ * writes it to alpha. Returning 0 leaves the draw untouched. NULL removes the
+ * filter (the default: nothing changes). */
+#define PGRAPH_SUBST_OVERLAYS 10
+typedef struct {
+    const uint32_t *indices;    /* triangle list */
+    uint32_t count;
+    float rgba[4];
+    int blend;
+    uint32_t weights;           /* byte offset of the per-vertex alphas in host */
+    uint32_t tex_offset[4], tex_format[4];
+    uint32_t address[4];        /* nonzero: stage's TEXTURE_ADDRESS word for this overlay */
+} PgraphDrawOverlay;
+typedef struct {
+    const uint32_t *indices;
+    uint32_t count;
+    const uint8_t *host;        /* replacement vertices, `size` bytes */
+    uint32_t size;
+    uint32_t base, span;        /* the guest span the replaced arrays start in */
+    uint32_t n_overlay;
+    PgraphDrawOverlay overlay[PGRAPH_SUBST_OVERLAYS];
+    uint32_t address[4];        /* nonzero: stage's TEXTURE_ADDRESS word (U 3:0, V 11:8) for the main pass (not the overlays) */
+} PgraphDrawSubst;
+typedef int (*pgraph_draw_subst_fn)(uint32_t mode, const uint32_t *indices, uint32_t count,
+                                    const uint32_t offset[16], const uint32_t format[16],
+                                    PgraphDrawSubst *out);
+void pgraph_d3d11_set_draw_subst(pgraph_draw_subst_fn fn);
+/* The texture bound to stage 0..3 (offset and format registers), for a
+ * substitution filter on the pump thread. */
+void pgraph_d3d11_tex_binding(int stage, uint32_t *offset, uint32_t *format);
+/* The stage's TEXTURE_ADDRESS word (pump thread). */
+uint32_t pgraph_d3d11_tex_address(int stage);
+/* The stage's FORMAT, FILTER, ADDRESS and CONTROL0 words as the title set them (pump thread, diagnostics). */
+void pgraph_d3d11_tex_state(int stage, uint32_t *format, uint32_t *filter, uint32_t *address, uint32_t *control0, int *enabled);
+
 /* Statistics */
 typedef struct {
     uint32_t frames;

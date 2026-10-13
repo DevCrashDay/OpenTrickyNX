@@ -2,6 +2,34 @@
 
 All notable changes to OpenTricky. Versions follow [Semantic Versioning](https://semver.org/); `-unstable` marks test releases.
 
+## [0.1.3-unstable] — 2026-10-13
+
+A short release for Linux and the Steam Deck, plus one fix to the music. The very low frame rate under Wine and Proton is fixed, the music now fades as in the original game, and updates are now signed.
+
+### Fixed
+- **Very low frame rate on Linux and the Steam Deck (Wine, Proton)**: the game's shaders now run on the graphics card again under Proton, and the soft shadows no longer crash Wine's shader compiler. Reported on GitHub, then confirmed by a player: 60 FPS locked, 120 at most.
+- **Music volume changes**: the music now fades down and back up over one second (under the announcer's voice, on the results screen, in the menus) instead of jumping at once, as in the original game. This was a translation error of the port.
+
+### Improved
+- **Steam Deck preset**: the launcher applies it by itself at the first start on a Steam Deck.
+
+### New
+- **Signed updates**: the launcher checks the signature of the downloaded zip. A zip that isn't signed, or that was modified, is refused.
+- **What's new** panel of the launcher: read from `whatsnew.txt`.
+
+### Changed
+- **Release zip name**: `OpenTricky-<version>-unstable-win64.zip`. The launcher matches a signed zip to its release by the version number.
+
+### Known issues
+- **Above 60 FPS, the controls answer one game step later** (about 17 ms): set *Frame rate limit* to *60* for the original game's exact timing.
+- **Linux / Steam Deck (Proton):** 0.1.3 fixes the very low frame rate under Wine/Proton. The game now runs smoothly on Linux. With Proton Experimental, performance may still be lower: if so, try Proton 10 or PortProton, and report it with your logs.
+- Only Xbox-style (XInput) controllers are supported natively, so *Button style: Auto* shows Xbox buttons.
+- **5.1 surround** is not yet tested on real 5.1 speakers.
+- **Smoother legs in turns** is experimental.
+- **Terrain**: some pieces of terrain show visible seams, as in the original game.
+
+See also [Known issues](README.md#known-issues) in the README.
+
 ## [0.1.2-unstable] — 2026-10-11
 
 A round of fixes that bring the game closer to the original game: the "melting" snow, the Showoff snowflakes, the crowd and voices at the end of a race, the stretched picture at the start, long sessions. Also: the HUD at high frame rates, Start during the intro, VSync *Adaptive*, saves in folders with accents, private crash reports, a new *Save profile* with everything unlocked, and a launcher that tells you when a setting does nothing. The game now lives in a `bin` folder.

@@ -6,10 +6,10 @@
     crashdump_scan.py --selftest
 
 Looks for every folder in every form Windows can store it in:
-    D:\\Games\\SSX          (with the drive letter)
-    \\Games\\SSX            (without: what any other form contains)
-    \\Device\\HarddiskVolume3\\Games\\SSX   (NT form, from QueryDosDeviceW)
-    \\??\\D:\\Games\\SSX  and  \\\\?\\D:\\Games\\SSX
+    E:\\Play\\OpenTricky            (with the drive letter)
+    \\Play\\OpenTricky              (without: what any other form contains)
+    \\Device\\HarddiskVolume3\\Play\\OpenTricky   (NT form, from QueryDosDeviceW)
+    \\??\\E:\\Play\\OpenTricky  and  \\\\?\\E:\\Play\\OpenTricky
 and for every name, each one as UTF-16LE, UTF-8 and the ANSI code page,
 case-insensitive (Unicode simple case: a pattern letter matches its lower and
 upper case), at any byte offset. Also the folder's own name (5 letters or

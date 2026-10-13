@@ -537,6 +537,120 @@ static void test_install_root(const char *root)
     rmdir_(lonebin); rmdir_(lone); rmdir_(build); rmdir_(dev); rmdir_(sub); rmdir_(bin); rmdir_(inst); rmdir_(top);
 }
 
+/* ── the first start on a Steam Deck: the Steam Deck preset, only under Wine ── */
+static void set_env(const char *name, const char *value)    /* value NULL: unset */
+{
+#ifdef _WIN32
+    char line[1100];
+    snprintf(line, sizeof line, "%s=%s", name, value ? value : "");
+    _putenv(line);
+#else
+    if (value) setenv(name, value, 1);
+    else unsetenv(name);
+#endif
+}
+
+static int first_preset(int wine, const char *vendor, const char *product, const char *steamdeck)
+{
+    SettingsPlatform p;
+    char why[200];
+    memset(&p, 0, sizeof p);
+    p.wine = wine;
+    snprintf(p.vendor, sizeof p.vendor, "%s", vendor);
+    snprintf(p.product, sizeof p.product, "%s", product);
+    snprintf(p.steamdeck, sizeof p.steamdeck, "%s", steamdeck);
+    why[0] = 0;
+    {
+        int r = settings_first_start_preset(&p, why, sizeof why);
+        CHECK(why[0] != 0);                     /* always a reason for the log */
+        return r;
+    }
+}
+
+static void test_first_start(const char *root)
+{
+    const int D = SETTINGS_PRESET_STEAM_DECK;
+    char deck[600], sys[600], cls[600], dmi[600], id[600], f1[700], f2[700], f3[700], f4[700];
+    SettingsPlatform p;
+    char why[200];
+
+    /* 1. the decision */
+    CHECK(first_preset(0, "Valve", "Jupiter", "1") == -1);        /* never without Wine (Windows) */
+    CHECK(first_preset(1, "Valve", "Jupiter", "") == D);          /* LCD */
+    CHECK(first_preset(1, "Valve", "Galileo", "") == D);          /* OLED */
+    CHECK(first_preset(1, "valve", "GALILEO", "") == D);          /* case does not matter */
+    CHECK(first_preset(1, "Valve", "Jupiter", "0") == -1);        /* SteamDeck=0 turns it off */
+    CHECK(first_preset(1, "Valve", "Fremont", "1") == -1);        /* another Valve machine: the DMI decides */
+    CHECK(first_preset(1, "ASUSTeK COMPUTER INC.", "ROG Ally", "1") == -1);   /* SteamDeck=1 on another PC */
+    CHECK(first_preset(1, "", "", "1") == D);                     /* no DMI: SteamDeck=1 */
+    CHECK(first_preset(1, "", "", "") == -1);
+    CHECK(first_preset(1, "", "", "yes") == -1);                  /* only "1" */
+    CHECK(settings_first_start_preset(&(SettingsPlatform){ 0 }, NULL, 0) == -1);   /* no reason asked */
+
+    /* 2. the DMI files, read under a root given by the test */
+    path(deck, root, "deck");
+    path(sys, deck, "sys");
+    path(cls, sys, "class");
+    path(dmi, cls, "dmi");
+    path(id, dmi, "id");
+    mk(root); mk(deck); mk(sys); mk(cls); mk(dmi); mk(id);
+    path(f1, id, "sys_vendor");
+    path(f2, id, "product_name");
+    path(f3, id, "board_vendor");
+    path(f4, id, "board_name");
+    write_file(f1, "Valve\n");
+    write_file(f2, "  Galileo \r\n");
+    set_env("XBOX_TEST_DECK_ROOT", NULL);
+    set_env("SteamDeck", NULL);
+    settings_platform_probe(&p, deck);
+    CHECK_STR(p.vendor, "Valve");
+    CHECK_STR(p.product, "Galileo");
+    CHECK_STR(p.steamdeck, "");
+    rm(f1); rm(f2);
+    write_file(f3, "Valve");                  /* no sys_vendor / product_name: the board's */
+    write_file(f4, "Jupiter\n");
+    settings_platform_probe(&p, deck);
+    CHECK_STR(p.vendor, "Valve");
+    CHECK_STR(p.product, "Jupiter");
+    rm(f3); rm(f4);
+    settings_platform_probe(&p, deck);        /* no DMI files at all */
+    CHECK_STR(p.vendor, "");
+    CHECK_STR(p.product, "");
+
+    /* 3. this process: on Windows (no Wine), never a Steam Deck, even with SteamDeck=1 */
+    set_env("SteamDeck", "1");
+    settings_platform_probe(&p, NULL);
+    CHECK_STR(p.steamdeck, "1");
+    if (!p.wine) {
+        CHECK_STR(p.vendor, "");                /* Z:\ not read */
+        CHECK(settings_first_start_preset(&p, why, sizeof why) == -1);
+    }
+
+    /* 4. XBOX_TEST_DECK_ROOT (test only) stands in for Wine and its root */
+    write_file(f1, "Valve\n");
+    write_file(f2, "Jupiter\n");
+    set_env("SteamDeck", NULL);
+    set_env("XBOX_TEST_DECK_ROOT", deck);
+    settings_platform_probe(&p, NULL);
+    CHECK(p.wine);
+    CHECK(settings_first_start_preset(&p, why, sizeof why) == D);
+    CHECK(strstr(why, "Jupiter") != NULL);
+    set_env("SteamDeck", "0");
+    settings_platform_probe(&p, NULL);
+    CHECK(settings_first_start_preset(&p, why, sizeof why) == -1);
+    set_env("SteamDeck", NULL);
+    set_env("XBOX_TEST_DECK_ROOT", NULL);
+
+    /* 5. what the launcher does with it: no file, then the preset */
+    path(f3, deck, "settings.ini");
+    CHECK(settings_load(&A, f3, NULL) == SETTINGS_LOAD_MISSING);
+    settings_apply_preset(&A, D);
+    CHECK(settings_current_preset(&A) == D);
+
+    rm(f1); rm(f2);
+    rmdir_(id); rmdir_(dmi); rmdir_(cls); rmdir_(sys); rmdir_(deck);
+}
+
 int main(int argc, char **argv)
 {
     const char *root = argc > 1 ? argv[1] : "settings_test_tmp";
@@ -546,6 +660,7 @@ int main(int argc, char **argv)
     test_text();
     test_files(root);
     test_install_root(root);
+    test_first_start(root);
     printf("%s: %d checks, %d failed\n", s_fail ? "FAIL" : "PASS", s_checks, s_fail);
     return s_fail ? 1 : 0;
 }

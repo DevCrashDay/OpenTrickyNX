@@ -562,6 +562,25 @@ static uint64_t fnv64(uint64_t h, const void *p, size_t n)
     return h;
 }
 
+/* XBOX_NV2A_HLSL_DUMP=<existing folder> (debug, off by default): each
+ * generated shader source is also written there as <name>_<key>.hlsl (at
+ * most 256 files), to try it with another HLSL compiler. */
+static void nv_hlsl_dump(const char *name, uint64_t key, const char *src, int len)
+{
+    static const char *dir;
+    static int count;
+    char path[600];
+    FILE *f;
+    if (!dir) { dir = getenv("XBOX_NV2A_HLSL_DUMP"); if (!dir) dir = ""; }
+    if (!dir[0] || count >= 256) return;
+    count++;
+    snprintf(path, sizeof path, "%s/%s_%016llX.hlsl", dir, name, (unsigned long long)key);
+    f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(src, 1, (size_t)len, f);
+    fclose(f);
+}
+
 /* The shader for this program and these input kinds, compiled on first use.
  * A program that fails to compile is remembered, so it is not retried. */
 static int vsh_lookup(const Nv2aVshDraw *d, const uint8_t kind[16]);
@@ -612,7 +631,8 @@ static int vsh_lookup(const Nv2aVshDraw *d, const uint8_t kind[16])
     len = nv2a_vsh_hlsl(d->prog, d->prog_len, d->inputs, kind, d->topology == D3DPT_POINTLIST,
                         src, (int)sizeof src);
     if (len <= 0) return -1;
-    /* IEEE strictness keeps the isnan/isfinite tests the CPU path relies on. */
+    nv_hlsl_dump("vs_nv2a_prog", key, src, len);
+    /* IEEE strictness keeps the NaN and infinity rules of the CPU path. */
     {
         double t0 = nv_now_ms();
         int hit;
@@ -772,10 +792,12 @@ static const char g_gs_src[] =
     "    float4 pos : SV_POSITION; float4 d0 : COLOR0; float4 d1 : COLOR1; float fog : FOG;\n"
     "    float4 t0 : TEXCOORD0; float4 t1 : TEXCOORD1; float4 t2 : TEXCOORD2; float4 t3 : TEXCOORD3;\n"
     "};\n"
+    /* NaN read from the bits, as in the vertex programs (d3d8_nv2a_vsh.c). */
+    "bool nv_isnan(float x) { return (asuint(x) & 0x7FFFFFFF) > 0x7F800000; }\n"
     "[maxvertexcount(4)]\n"
     "void main(point VSOut p[1], inout TriangleStream<GSOut> s) {\n"
     "    VSOut v = p[0];\n"
-    "    if (isnan(v.pos.w)) return;\n"
+    "    if (nv_isnan(v.pos.w)) return;\n"
     "    float h = v.pt.z, wc = v.pos.w;\n"
     "    for (int c = 0; c < 4; c++) {\n"
     "        GSOut o;\n"
@@ -797,6 +819,7 @@ static int gs_init(void)
     HRESULT hr;
     if (g_gs) return 1;
     if (g_gs_failed || !dev) return 0;
+    nv_hlsl_dump("gs_nv2a_points", 0, g_gs_src, (int)strlen(g_gs_src));
     hr = D3DCompile(g_gs_src, strlen(g_gs_src), "gs_nv2a_points", NULL, NULL, "main", "gs_5_0",
                     D3DCOMPILE_IEEE_STRICTNESS, 0, &blob, &err);
     if (SUCCEEDED(hr))

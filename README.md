@@ -11,7 +11,7 @@
   <a href="https://opentricky.com"><img alt="Website: opentricky.com" src="https://img.shields.io/badge/website-opentricky.com-0b5cd5"></a>
   <a href="https://github.com/GiZcesi/OpenTricky/releases"><img alt="Release" src="https://img.shields.io/github/v/release/GiZcesi/OpenTricky?include_prereleases&label=release&color=orange"></a>
   <img alt="Status: unstable" src="https://img.shields.io/badge/status-unstable-orange">
-  <img alt="Platform: Windows 10/11 x64" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue">
+  <img alt="Platform: Windows 10/11 x64, Linux / Steam Deck (Proton)" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64%20%C2%B7%20Linux%20%2F%20Steam%20Deck%20(Proton)-blue">
   <img alt="Graphics: Direct3D 11" src="https://img.shields.io/badge/graphics-Direct3D%2011-blue">
   <a href="LICENSE"><img alt="License: GPL-3.0-only" src="https://img.shields.io/badge/license-GPL--3.0--only-green"></a>
   <a href="https://discord.gg/r38sThsqnj"><img alt="Discord" src="https://img.shields.io/badge/Discord-join%20the%20server-5865F2?logo=discord&logoColor=white"></a>
@@ -31,7 +31,7 @@
 ## Contents
 
 - [What is this?](#what-is-this)
-- [What's new in 0.1.2](#whats-new-in-012)
+- [What's new in 0.1.3](#whats-new-in-013)
 - [Install and play](#install-and-play)
 - [Controls and settings](#controls-and-settings)
 - [Known issues](#known-issues)
@@ -55,14 +55,12 @@ The goals:
 2. **A modern PC release**: modern controllers and button styles (Xbox, PlayStation, PS2 original), the original PS2 controls with all 15 grabs, full keyboard and controller remapping, any resolution, ultrawide, high frame rates, all set up in one launcher.
 3. **New options on top**: smoother edges, soft shadows, longer draw distance, optional HD textures. The *Original Xbox* preset turns them all off at once.
 
-## What's new in 0.1.2
+## What's new in 0.1.3
 
-- **Closer to the original game**: the "melting" snow is fixed (it was a port bug), the Showoff snowflakes can be collected again, and the crowd, the ambience and the rider's voice are back at the end of a race.
-- **Steadier races**: no more stretched frame at the race start, and long sessions no longer lose the world after a few events in a row.
-- **The HUD at any frame rate**: the race HUD and its menus run at the right speed above 60 FPS.
-- **Save profile**: your own save, or a separate save with everything unlocked. Your own save is never touched.
-- **A tidier install folder**: the game now lives in `bin\`, and the launcher tells you when a setting does nothing on your screen.
-- **A safer launcher**: it can now check a release's signature (it will be used from a later, signed release); crash reports no longer keep any folder name; *Restore* asks before it does anything.
+- **Linux and Steam Deck**: the very low frame rate under Wine and Proton is fixed. The game now runs smoothly there.
+- **Music, as in the original game**: it fades down and back up over one second (under the announcer's voice, on the results screen, in the menus) instead of jumping at once.
+- **Signed updates**: the launcher checks the signature of the downloaded zip and refuses one that is unsigned or modified.
+- **Steam Deck preset**: applied by itself at the first start on a Steam Deck.
 
 Everything else: the [release notes](https://github.com/GiZcesi/OpenTricky/releases) and [CHANGELOG.md](CHANGELOG.md).
 
@@ -71,13 +69,13 @@ Everything else: the [release notes](https://github.com/GiZcesi/OpenTricky/relea
 **You need** Windows 10 or 11 (64-bit), a Direct3D 11 graphics card, and a disc image (`.iso` or `.xiso`) of your own ***SSX Tricky* Xbox disc, USA release**
 (the PS2, GameCube, PAL and Japanese versions won't work). A controller is optional: Xbox-style (XInput) controllers and the keyboard work.
 
-1. Download `OpenTricky-<version>-win64.zip` from [**Releases**](https://github.com/GiZcesi/OpenTricky/releases) and extract it into a new, empty folder.
+1. Download `OpenTricky-<version>-unstable-win64.zip` from [**Releases**](https://github.com/GiZcesi/OpenTricky/releases) and extract it into a new, empty folder.
 2. Start **`OpenTricky.exe`**, the launcher, and choose your disc image: the launcher checks it and remembers it.
 3. Pick a preset or your own settings, then press **PLAY**.
 
 The game itself is `bin\SSX Tricky.exe`: it also starts the game straight away, with the same settings.
 
-**Coming from 0.1.1:** install 0.1.2 fresh, in a new folder. Saves in `Documents\My Games\SSX Tricky\Saves` stay where they are; if your saves were inside the old folder (with `portable.txt`), copy its `Saves` folder and `portable.txt` into the new one. Don't copy `settings.ini`, choose your disc image again, then delete the old folder. Shortcuts to the old `SSX Tricky.exe` need to be made again.
+**Coming from 0.1.2:** let the launcher update you. **Coming from 0.1.1:** install 0.1.3 fresh, in a new folder (the 0.1.1 launcher can't install it). Saves in `Documents\My Games\SSX Tricky\Saves` stay where they are; if your saves were inside the old folder (with `portable.txt`), copy its `Saves` folder and `portable.txt` into the new one. Don't copy `settings.ini`, choose your disc image again, make your shortcuts again (the game is now `bin\SSX Tricky.exe`), then delete the old folder.
 
 > [!NOTE]
 > Windows SmartScreen may warn you because the program isn't code-signed. If you trust the download, choose **More info → Run anyway**.
@@ -111,7 +109,8 @@ The main ones, most serious first. The full list is on [opentricky.com/known-iss
 |---|---|
 | **Above 60 FPS, the controls answer one game step later** (about 17 ms). | Set *Frame rate limit* to *60* for the original game's exact timing. |
 | **Only Xbox-style (XInput) controllers are supported natively.** | Use Steam Input or DS4Windows, and choose *PlayStation modern* or *PS2 original* in *Button style*. |
-| **Steam Deck: launching through the Steam client can be slow (down to about 15 FPS); the cause is being looked into, and *Proton Experimental* is the most likely one.** Linux desktops aren't confirmed yet, and real 5.1 speakers aren't tested. | In Desktop Mode, run `OpenTricky.exe` with **PortProton** (Flatpak): WINE *PROTON_LG_10-28*, 3D API *DXVK (Newest)*, then the *Steam Deck* preset in the launcher. Through Steam, don't use *Proton Experimental*: pick *Proton 10* or *11* in *Properties > Compatibility* and tell us how it runs. |
+| **Linux / Steam Deck (Proton):** 0.1.3 fixes the very low frame rate under Wine/Proton. The game now runs smoothly on Linux. With Proton Experimental, performance may still be lower: if so, try Proton 10 or PortProton, and report it with your logs. | Through Steam, pick *Proton 10* in *Properties > Compatibility*. Or, in Desktop Mode, run `OpenTricky.exe` with **PortProton** (Flatpak): WINE *PROTON_LG_10-28*, 3D API *DXVK (Newest)*, then the *Steam Deck* preset in the launcher. |
+| **5.1 surround isn't tested on real 5.1 speakers.** | Tell us how it sounds. |
 
 ## FAQ
 

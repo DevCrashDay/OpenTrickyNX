@@ -776,6 +776,7 @@ static Settings s_settings;
 /* What launcher_config_load printed, for the log file (opened after it). */
 static char s_settings_line[SETTINGS_VALUE_MAX + 160];
 static char s_settings_ignored[SETTINGS_IGNORED_MAX + 64];
+static char s_settings_deck[320];
 
 void launcher_config_load(LauncherConfig *cfg)
 {
@@ -784,6 +785,20 @@ void launcher_config_load(LauncherConfig *cfg)
 
     config_path_u8(u8, sizeof u8);
     r = settings_load(&s_settings, u8, &bad);       /* defaults when missing or old */
+    s_settings_deck[0] = '\0';
+    if (r == SETTINGS_LOAD_MISSING) {   /* no file yet: a Steam Deck starts from its preset, as in the launcher */
+        SettingsPlatform p;
+        char why[200];
+        settings_platform_probe(&p, NULL);
+        if (settings_first_start_preset(&p, why, sizeof why) == SETTINGS_PRESET_STEAM_DECK) {
+            settings_apply_preset(&s_settings, SETTINGS_PRESET_STEAM_DECK);
+            snprintf(s_settings_deck, sizeof s_settings_deck,
+                     "Settings:  first start on a Steam Deck (%s): Steam Deck preset\n", why);
+        } else if (p.wine) {
+            snprintf(s_settings_deck, sizeof s_settings_deck,
+                     "Settings:  first start under Wine, not a Steam Deck (%s): defaults\n", why);
+        }
+    }
     config_from_settings(cfg, &s_settings);
     if (bad) snprintf(lines, sizeof lines, ", %d line(s) ignored", bad);
     snprintf(s_settings_line, sizeof s_settings_line, "Settings:  %s (%s%s, preset %s)\n", u8,
@@ -803,6 +818,7 @@ void launcher_config_load(LauncherConfig *cfg)
 void launcher_config_log(void)
 {
     fputs(s_settings_line, stdout);
+    fputs(s_settings_deck, stdout);
     fputs(s_settings_ignored, stdout);
 }
 

@@ -158,6 +158,29 @@ int  settings_is_default(const Settings *s, int id);
 void settings_apply_preset(Settings *s, int preset);
 int  settings_current_preset(const Settings *s);
 
+/* ── The first start on a Steam Deck ──
+ * With no settings.ini yet (SETTINGS_LOAD_MISSING), the launcher and the game
+ * start from the Steam Deck preset instead of the defaults when they run
+ * under Wine / Proton on a Steam Deck. Never on Windows, never over a file:
+ * a player's choice always stays. */
+typedef struct SettingsPlatform {
+    int  wine;                  /* under Wine / Proton (ntdll has wine_get_version) */
+    char vendor[64];            /* DMI sys_vendor (or board_vendor); "" = not read */
+    char product[64];           /* DMI product_name (or board_name); "" = not read */
+    char steamdeck[16];         /* the SteamDeck variable Steam sets; "" = not set */
+} SettingsPlatform;
+/* Fills `p`. The DMI is read only under Wine, from <root>sys\class\dmi\id\
+ * (root NULL: Z:\, the Linux root under Wine), or from `root` when one is
+ * given (tests). Test only: XBOX_TEST_DECK_ROOT=<folder> stands in for Wine
+ * and for that root. */
+void settings_platform_probe(SettingsPlatform *p, const char *root);
+/* SETTINGS_PRESET_STEAM_DECK when `p` is a Steam Deck under Wine, else -1.
+ * The DMI decides when it was read (vendor Valve, product Jupiter = LCD or
+ * Galileo = OLED); SteamDeck=1 only when it could not be; no Wine or
+ * SteamDeck=0: never. The screen size alone never counts. `why` gets a short
+ * English reason, for the log. */
+int  settings_first_start_preset(const SettingsPlatform *p, char *why, size_t why_sz);
+
 /* ── The file ── */
 enum {
     SETTINGS_LOAD_OK,           /* read (keys not known or with a bad value: their default) */

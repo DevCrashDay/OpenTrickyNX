@@ -97,6 +97,18 @@ static D3D11_STENCIL_OP d3d8_to_d3d11_stencilop(DWORD op)
     }
 }
 
+/* the alpha-channel counterpart of a blend factor (D3D11 allows no colour factor there) */
+static D3D11_BLEND blend_alpha_factor(D3D11_BLEND b)
+{
+    switch (b) {
+    case D3D11_BLEND_SRC_COLOR:      return D3D11_BLEND_SRC_ALPHA;
+    case D3D11_BLEND_INV_SRC_COLOR:  return D3D11_BLEND_INV_SRC_ALPHA;
+    case D3D11_BLEND_DEST_COLOR:     return D3D11_BLEND_DEST_ALPHA;
+    case D3D11_BLEND_INV_DEST_COLOR: return D3D11_BLEND_INV_DEST_ALPHA;
+    default:                         return b;
+    }
+}
+
 static D3D11_BLEND_OP d3d8_to_d3d11_blendop(DWORD op)
 {
     switch (op) {
@@ -170,8 +182,10 @@ static void update_blend_state(const DWORD *rs)
     bd.RenderTarget[0].SrcBlend = d3d8_to_d3d11_blend(rs[D3DRS_SRCBLEND]);
     bd.RenderTarget[0].DestBlend = d3d8_to_d3d11_blend(rs[D3DRS_DESTBLEND]);
     bd.RenderTarget[0].BlendOp = d3d8_to_d3d11_blendop(rs[D3DRS_BLENDOP] ? rs[D3DRS_BLENDOP] : 1);
-    bd.RenderTarget[0].SrcBlendAlpha = bd.RenderTarget[0].SrcBlend;
-    bd.RenderTarget[0].DestBlendAlpha = bd.RenderTarget[0].DestBlend;
+    /* D3D11 refuses colour factors on the alpha channel (CreateBlendState
+     * fails, and the draw went out unblended): their alpha counterparts there */
+    bd.RenderTarget[0].SrcBlendAlpha = blend_alpha_factor(bd.RenderTarget[0].SrcBlend);
+    bd.RenderTarget[0].DestBlendAlpha = blend_alpha_factor(bd.RenderTarget[0].DestBlend);
     bd.RenderTarget[0].BlendOpAlpha = bd.RenderTarget[0].BlendOp;
     bd.RenderTarget[0].RenderTargetWriteMask = (UINT8)(rs[D3DRS_COLORWRITEENABLE] & 0x0F);
 

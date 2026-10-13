@@ -71,6 +71,9 @@ int g_fix_riderlist = 1;
 int g_fix_speechhold = 1;
 /* Fork: read by fps_cap_skip_emitters() (fix_crowdemit.py), set in main(). */
 int g_fix_crowdemit = 1;
+/* Fork: read by the generated code of 0x10E280 / 0x115EE0 (fix_fadeparity.py) and by
+ * fps_cap_skip_fade(), set in main(). */
+int g_fix_fade = 1;
 /* List sizes stored by the generated code after the split (0x2FBC5). */
 uint32_t g_riderlist_ai_n, g_riderlist_pl_n;
 /* Called by the generated code (fix_riderlist.py) when, in sub_0002F800,
@@ -99,6 +102,7 @@ void fork_riderlist_note(uint32_t kind, uint32_t race, uint32_t tick, uint32_t r
 #include "fps_cap.h"
 #include "aspect.h"
 #include "drawdist.h"
+#include "terrain_seams.h"
 #include "ctlscheme.h"
 #include "ps2legend.h"
 #include "fullfade.h"
@@ -1003,6 +1007,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Draw distance (XBOX_DRAW_DISTANCE, or DrawDistance in the
      * .ini through the launcher above). Original by default: no hook. */
     drawdist_init();
+    /* Texture seams between terrain patches (terrain_seams.h): PC options,
+     * off by default, and then nothing is hooked. */
+    terrain_seams_init();
     /* Control scheme: the button maps are served in the PS2 layout, lessons
      * included (ctlscheme.h); XBOX_CONTROL_SCHEME=xbox (debug only, never set
      * by the launcher) keeps the original files, nothing hooked. */
@@ -1088,6 +1095,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         const char *e = getenv("XBOX_FIX_CROWDEMIT");
         g_fix_crowdemit = !(e && e[0] == '0');
         if (!g_fix_crowdemit) fprintf(stderr, "[CROWDEMIT] XBOX_FIX_CROWDEMIT=0 (emitter update in every render)\n");
+    }
+    {
+        const char *e = getenv("XBOX_FIX_FADE");
+        g_fix_fade = !(e && e[0] == '0');
+        if (!g_fix_fade) fprintf(stderr, "[FADE] XBOX_FIX_FADE=0 (1 s volume fades done in one frame)\n");
     }
     /* Deliver the APU's front-end trap interrupt (XBOX_FIX_BOOTHANG,
      * default 1). See boothang_hook above. */
