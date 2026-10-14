@@ -1,0 +1,11 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "SSX Tricky",
+  "project": "OpenTricky",
+  "system": "Xbox",
+  "type": "recomp",
+  "status": "playable",
+  "targets": ["Windows", "Linux", "Steam Deck"],
+  "toolchain": "xboxrecomp",
+  "original": {"region": "USA"}
+}
