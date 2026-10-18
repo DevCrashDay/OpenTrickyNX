@@ -943,8 +943,8 @@ int settings_game_dir(char *out, size_t out_sz)
     if (slash) *slash = 0;
     return narrow(w, out, out_sz);
 #else
-    (void)out; (void)out_sz;
-    return 0;
+    extern int ot_exe_dir(char *out, size_t out_sz);   /* posix/ot_posix.c */
+    return ot_exe_dir(out, out_sz);
 #endif
 }
 

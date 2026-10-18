@@ -1147,12 +1147,13 @@ BOOL FlushFileBuffers(HANDLE h)
 /* via SDL_GetKeyboardState when main.c gets its SDL2 port.              */
 /* ===================================================================== */
 
-SHORT GetAsyncKeyState(int vKey)          { (void)vKey; return 0; }
+/* Weak: a game port with a real window and keyboard (SDL) provides its own. */
+__attribute__((weak)) SHORT GetAsyncKeyState(int vKey) { (void)vKey; return 0; }
 HWND  FindWindowA(LPCSTR c, LPCSTR w)     { (void)c; (void)w; return NULL; }
 HWND  GetActiveWindow(void)               { return NULL; }
 BOOL  SetWindowTextA(HWND h, LPCSTR t)    { (void)h; (void)t; return TRUE; }
 
-int MessageBoxA(HWND h, LPCSTR text, LPCSTR caption, UINT type)
+__attribute__((weak)) int MessageBoxA(HWND h, LPCSTR text, LPCSTR caption, UINT type)
 {
     (void)h; (void)type;
     fprintf(stderr, "[%s] %s\n", caption ? caption : "MessageBox",
@@ -1168,7 +1169,7 @@ BOOL    TranslateMessage(const MSG *m) { (void)m; return TRUE; }
 LRESULT DispatchMessageA(const MSG *m) { (void)m; return 0; }
 
 /* XInput stub: real gamepad is wired through input_compat (SDL2). */
-DWORD XInputGetState(DWORD idx, XINPUT_STATE *state)
+__attribute__((weak)) DWORD XInputGetState(DWORD idx, XINPUT_STATE *state)
 { (void)idx; if (state) memset(state, 0, sizeof(*state)); return ERROR_DEVICE_NOT_CONNECTED; }
 
 BOOL TerminateProcess(HANDLE process, UINT exitCode)
@@ -1761,20 +1762,110 @@ BOOL CancelWaitableTimer(HANDLE timer)
 HMODULE GetModuleHandleA(LPCSTR name)  { (void)name; return NULL; }
 HMODULE GetModuleHandleW(LPCWSTR name) { (void)name; return NULL; }
 
+static char s_module_path[1024];
+
+void w32_set_module_path(const char *path)
+{
+    snprintf(s_module_path, sizeof s_module_path, "%s", path ? path : "");
+}
+
 DWORD GetModuleFileNameA(HMODULE mod, LPSTR buf, DWORD size)
 {
+    size_t n;
     (void)mod;
     if (!buf || !size) return 0;
+    if (s_module_path[0]) {
+        n = strlen(s_module_path);
+        if (n >= size) n = size - 1;
+        memcpy(buf, s_module_path, n);
+        buf[n] = 0;
+        return (DWORD)n;
+    }
 #if defined(__linux__)
-    ssize_t n = readlink("/proc/self/exe", buf, size - 1);
-    if (n < 0) n = 0;
-    buf[n] = 0;
-    return (DWORD)n;
+    {
+        ssize_t k = readlink("/proc/self/exe", buf, size - 1);
+        if (k < 0) k = 0;
+        buf[k] = 0;
+        return (DWORD)k;
+    }
 #else
     buf[0] = 0;
     return 0;
 #endif
 }
+
+/* ---- Resources ---------------------------------------------------------
+ * A Windows build links its RCDATA into the executable; here each one is a
+ * file named after the resource in a folder the program names at start
+ * (w32_set_resource_dir: the Switch romfs, or a folder beside the binary).
+ * Only by-name lookups are supported. A resource is read once and kept. */
+typedef struct W32Resource {
+    char   name[64];
+    void  *data;
+    DWORD  size;
+    int    loaded;
+} W32Resource;
+static char        s_res_dir[1024];
+static W32Resource s_res[128];
+static int         s_res_n;
+static CRITICAL_SECTION s_res_lock;
+static int         s_res_lock_init;
+
+void w32_set_resource_dir(const char *dir)
+{
+    snprintf(s_res_dir, sizeof s_res_dir, "%s", dir ? dir : "");
+}
+
+HRSRC FindResourceA(HMODULE mod, LPCSTR name, LPCSTR type)
+{
+    char path[1200];
+    struct stat st;
+    int i;
+    (void)mod; (void)type;
+    if (!name || (uintptr_t)name < 0x10000 || !s_res_dir[0]) return NULL;
+    if (!s_res_lock_init) { InitializeCriticalSection(&s_res_lock); s_res_lock_init = 1; }
+    EnterCriticalSection(&s_res_lock);
+    for (i = 0; i < s_res_n; i++)
+        if (!strcmp(s_res[i].name, name)) { LeaveCriticalSection(&s_res_lock); return &s_res[i]; }
+    snprintf(path, sizeof path, "%s/%s", s_res_dir, name);
+    if (strlen(name) >= sizeof s_res[0].name || stat(path, &st) != 0 || s_res_n >= 128) {
+        LeaveCriticalSection(&s_res_lock);
+        return NULL;
+    }
+    snprintf(s_res[s_res_n].name, sizeof s_res[0].name, "%s", name);
+    s_res[s_res_n].size = (DWORD)st.st_size;
+    i = s_res_n++;
+    LeaveCriticalSection(&s_res_lock);
+    return &s_res[i];
+}
+
+HGLOBAL LoadResource(HMODULE mod, HRSRC res)
+{
+    W32Resource *r = (W32Resource *)res;
+    (void)mod;
+    if (!r) return NULL;
+    EnterCriticalSection(&s_res_lock);
+    if (!r->loaded) {
+        char path[1200];
+        FILE *f;
+        snprintf(path, sizeof path, "%s/%s", s_res_dir, r->name);
+        f = fopen(path, "rb");
+        r->data = malloc(r->size + 1);
+        if (f && r->data && fread(r->data, 1, r->size, f) == r->size) {
+            ((char *)r->data)[r->size] = 0;
+            r->loaded = 1;
+        } else {
+            free(r->data);
+            r->data = NULL;
+        }
+        if (f) fclose(f);
+    }
+    LeaveCriticalSection(&s_res_lock);
+    return r->loaded ? (HGLOBAL)r : NULL;
+}
+
+LPVOID LockResource(HGLOBAL g) { return g ? ((W32Resource *)g)->data : NULL; }
+DWORD SizeofResource(HMODULE mod, HRSRC res) { (void)mod; return res ? ((W32Resource *)res)->size : 0; }
 
 USHORT CaptureStackBackTrace(ULONG skip, ULONG count, PVOID *frames, PULONG hash)
 {

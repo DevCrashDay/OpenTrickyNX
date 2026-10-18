@@ -13,8 +13,22 @@
 
 #include <windows.h>
 #include <stdint.h>
+#include <string.h>
+#include <wchar.h>
 
 #include "controls.h"
+
+/* The last '\' or '/' of a path (Linux and the Switch use '/'), or NULL. */
+static inline char *path_last_sep(char *p)
+{
+    char *a = strrchr(p, '\\'), *b = strrchr(p, '/');
+    return a > b ? a : b;
+}
+static inline WCHAR *path_last_sep_w(WCHAR *p)
+{
+    WCHAR *a = wcsrchr(p, L'\\'), *b = wcsrchr(p, L'/');
+    return a > b ? a : b;
+}
 
 typedef struct LauncherConfig {
     char iso[MAX_PATH];   /* disc image; empty until the player chooses one */

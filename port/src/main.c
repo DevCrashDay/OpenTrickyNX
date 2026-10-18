@@ -326,6 +326,9 @@ static void resolve_from_exe(const char *rel, char *out, size_t out_sz);
 static void resolve_from_exe_or_absolute(const char *p, char *out, size_t out_sz)
 {
     BOOL absolute = (p[0] && p[1] == ':') || (p[0] == '\\' && p[1] == '\\');
+#ifndef _WIN32
+    if (p[0] == '/' || strstr(p, ":/")) absolute = TRUE;           /* "/home/..", "sdmc:/.." */
+#endif
     if (absolute) {
         strncpy(out, p, out_sz - 1);
         out[out_sz - 1] = '\0';
@@ -347,7 +350,7 @@ static void resolve_from_exe(const char *rel, char *out, size_t out_sz)
         return;
     }
 
-    slash = strrchr(exe, '\\');
+    slash = path_last_sep(exe);
     if (slash) *slash = '\0'; else exe[0] = '\0';
 
     snprintf(joined, sizeof(joined), "%s\\%s", exe, rel);
@@ -372,7 +375,7 @@ static void resolve_from_exe_u8(const char *rel, char *out, size_t out_sz)
         snprintf(out, out_sz, "%s", rel);
         return;
     }
-    slash = wcsrchr(exe, L'\\');
+    slash = path_last_sep_w(exe);
     if (slash) *slash = L'\0'; else exe[0] = L'\0';
     _snwprintf(joined, MAX_PATH * 2, L"%ls\\%ls", exe, wrel);
     joined[MAX_PATH * 2 - 1] = 0;
@@ -404,6 +407,7 @@ extern size_t recomp_dispatch_init(void);
  *   - Add dumps of game-specific globals (heap handles, state flags)
  *   - Add SEH simulation if your game uses __try/__except
  */
+#ifdef _WIN32
 /* End of the stack scan below: 8 KB above the faulting rsp, but never past
  * the top of the thread's stack. A fault near the top of a shallow stack (a
  * thread that just started) otherwise faulted again inside this handler,
@@ -639,6 +643,8 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+#endif /* _WIN32: on other hosts host_fault traps the registers */
+
 /*
  * Who reads guest VA 8 / 0xC?
  *
@@ -755,8 +761,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      * not one the desktop scales up and blurs. */
     launcher_enable_dpi_awareness();
 
+#ifdef _WIN32
     /* Install VEH handler (first handler in chain) */
     AddVectoredExceptionHandler(1, veh_handler);
+#endif
 
     /* Rider command log (XBOX_NETLOG=1). Off by default, and then
      * recomp_lookup_manual() hands out none of its hooks. */
@@ -1525,6 +1533,7 @@ static BOOL load_xbe(const char *path, void **out_data, size_t *out_size)
  * ------------------------------------------------------------------ */
 extern volatile unsigned g_last_loc;
 
+#ifdef _WIN32
 static LONG WINAPI recomp_crash_filter(EXCEPTION_POINTERS *ep)
 {
     const EXCEPTION_RECORD *r = ep->ExceptionRecord;
@@ -1591,10 +1600,18 @@ static LONG WINAPI recomp_crash_filter(EXCEPTION_POINTERS *ep)
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+#endif /* _WIN32 */
+
 int main(int argc, char **argv)
 {
+#ifndef _WIN32
+    ot_set_args(argc, argv);    /* the command line, the executable's folder */
+    ot_host_init();             /* the Switch's file systems, controllers */
+#endif
     crashreport_install();      /* XBOX_CRASH_REPORT=0: nothing */
+#ifdef _WIN32
     SetUnhandledExceptionFilter(recomp_crash_filter);
+#endif
 
     (void)argc;
     (void)argv;

@@ -286,7 +286,42 @@ int   MessageBoxA(HWND hwnd, LPCSTR text, LPCSTR caption, UINT type);
 #define VK_F3        0x72
 #define VK_F4        0x73
 #define VK_F5        0x74
+#define VK_F6        0x75
+#define VK_F7        0x76
+#define VK_F8        0x77
+#define VK_F9        0x78
+#define VK_F10       0x79
+#define VK_F11       0x7A
 #define VK_F12       0x7B
+#define VK_F24       0x87
+#define VK_SNAPSHOT  0x2C
+#define VK_LWIN      0x5B
+#define VK_RWIN      0x5C
+#define VK_NUMPAD0   0x60
+#define VK_NUMPAD1   0x61
+#define VK_NUMPAD2   0x62
+#define VK_NUMPAD3   0x63
+#define VK_NUMPAD4   0x64
+#define VK_NUMPAD5   0x65
+#define VK_NUMPAD6   0x66
+#define VK_NUMPAD7   0x67
+#define VK_NUMPAD8   0x68
+#define VK_NUMPAD9   0x69
+#define VK_SEPARATOR 0x6C
+#define VK_DECIMAL   0x6E
+#define VK_LSHIFT    0xA0
+#define VK_RSHIFT    0xA1
+#define VK_LCONTROL  0xA2
+#define VK_RCONTROL  0xA3
+#define VK_LMENU     0xA4
+#define VK_RMENU     0xA5
+#define VK_OEM_1     0xBA
+#define VK_OEM_2     0xBF
+#define VK_OEM_3     0xC0
+#define VK_OEM_4     0xDB
+#define VK_OEM_5     0xDC
+#define VK_OEM_6     0xDD
+#define VK_OEM_7     0xDE
 #define VK_OEM_PLUS  0xBB
 #define VK_OEM_COMMA 0xBC
 #define VK_OEM_MINUS 0xBD
@@ -323,6 +358,26 @@ typedef struct _XINPUT_STATE {
     XINPUT_GAMEPAD Gamepad;
 } XINPUT_STATE;
 DWORD XInputGetState(DWORD idx, XINPUT_STATE *state);
+
+/* ---- Resources (RCDATA by name, read from files; see win32_compat.c) ---- */
+typedef void *HRSRC;
+#ifndef MAKEINTRESOURCEA
+#define MAKEINTRESOURCEA(i) ((LPSTR)(uintptr_t)(i))
+#endif
+void    w32_set_resource_dir(const char *dir);
+HRSRC   FindResourceA(HMODULE mod, LPCSTR name, LPCSTR type);
+HGLOBAL LoadResource(HMODULE mod, HRSRC res);
+LPVOID  LockResource(HGLOBAL g);
+DWORD   SizeofResource(HMODULE mod, HRSRC res);
+/* The executable's path for GetModuleFileNameA where the host has no
+ * /proc/self/exe (the Switch: the .nro path from argv[0]). */
+void    w32_set_module_path(const char *path);
+typedef struct _XINPUT_VIBRATION {
+    WORD wLeftMotorSpeed;
+    WORD wRightMotorSpeed;
+} XINPUT_VIBRATION;
+/* Provided by the game port (none in the platform layer). */
+DWORD XInputSetState(DWORD idx, XINPUT_VIBRATION *vibration);
 
 #define XINPUT_GAMEPAD_DPAD_UP        0x0001
 #define XINPUT_GAMEPAD_DPAD_DOWN      0x0002

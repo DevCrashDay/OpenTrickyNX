@@ -13,6 +13,14 @@ cmake_minimum_required(VERSION 3.20)
 
 project(ssx_tricky C)
 
+# Linux and Nintendo Switch builds (docs/switch.md) share everything below up
+# to the executable; they skip the Windows resources and the launcher, and
+# take their Win32 vocabulary from port/src/posix/.
+if(NOT WIN32)
+    include(posix.cmake)
+    return()
+endif()
+
 # The game's icon and manifest (src/ssx_recomp.rc.in) need the resource
 # compiler (windres with MinGW, rc.exe with MSVC).
 enable_language(RC)
