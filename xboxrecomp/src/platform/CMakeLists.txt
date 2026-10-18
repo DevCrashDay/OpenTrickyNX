@@ -24,7 +24,14 @@ if(WIN32)
     add_library(platform INTERFACE)
     target_include_directories(platform INTERFACE ${XBOXRECOMP_SRC_DIR})
 else()
-    add_library(platform STATIC win32_compat.c)
+    # host_fault.c: trapped MMIO apertures (SIGSEGV on Linux; on the Switch
+    # host_fault_nx.S takes over libnx's user-exception entry).
+    set(PLATFORM_SOURCES win32_compat.c host_fault.c)
+    if(NINTENDO_SWITCH)
+        enable_language(ASM)
+        list(APPEND PLATFORM_SOURCES host_fault_nx.S)
+    endif()
+    add_library(platform STATIC ${PLATFORM_SOURCES})
     target_include_directories(platform PUBLIC
         ${XBOXRECOMP_SRC_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}

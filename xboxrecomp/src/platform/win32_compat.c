@@ -26,7 +26,10 @@
 #include <sched.h>
 #include <fenv.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#if defined(__linux__)
 #include <sys/sysinfo.h>
+#endif
 
 /* ===================================================================== */
 /* Last-error (thread-local)                                             */
@@ -170,7 +173,7 @@ VOID WakeAllConditionVariable(PCONDITION_VARIABLE cv)
 /* ===================================================================== */
 
 typedef enum { K_EVENT, K_SEM, K_MUTEX, K_THREAD, K_TIMER, K_HEAP,
-               K_FILEMAP, K_FILE } w32_kind;
+               K_FILEMAP, K_FILE, K_WTIMER } w32_kind;
 
 #define W32_MAX_APC 16
 
@@ -213,6 +216,11 @@ typedef struct w32_object {
     DWORD           timer_period;
     WAITORTIMERCALLBACK timer_cb;
     PVOID           timer_param;
+
+    /* waitable timer: armed until wt_due (CLOCK_REALTIME), then signaled */
+    int             wt_armed;
+    struct timespec wt_due;
+    LONG            wt_period_ms;
 
     /* file mapping / fd-backed file handle */
     int             fd;
@@ -359,7 +367,29 @@ static DWORD wait_single(w32_object *o, DWORD ms)
 
     for (;;) {
         int ready = 0;
+        struct timespec *until = timed ? &ts : NULL;
         switch (o->kind) {
+        case K_WTIMER:
+            if (o->wt_armed) {
+                struct timespec now;
+                clock_gettime(CLOCK_REALTIME, &now);
+                if (now.tv_sec > o->wt_due.tv_sec ||
+                    (now.tv_sec == o->wt_due.tv_sec && now.tv_nsec >= o->wt_due.tv_nsec)) {
+                    o->signaled = 1;
+                    if (o->wt_period_ms > 0) {
+                        o->wt_due.tv_sec  += o->wt_period_ms / 1000;
+                        o->wt_due.tv_nsec += (long)(o->wt_period_ms % 1000) * 1000000L;
+                        if (o->wt_due.tv_nsec >= 1000000000L) { o->wt_due.tv_sec++; o->wt_due.tv_nsec -= 1000000000L; }
+                    } else {
+                        o->wt_armed = 0;
+                    }
+                } else if (!until || o->wt_due.tv_sec < until->tv_sec ||
+                           (o->wt_due.tv_sec == until->tv_sec && o->wt_due.tv_nsec < until->tv_nsec)) {
+                    until = &o->wt_due;
+                }
+            }
+            ready = o->signaled;
+            break;
         case K_EVENT:  ready = o->signaled; break;
         case K_THREAD: ready = o->exited;   break;
         case K_SEM:    ready = (o->sem_count > 0); break;
@@ -370,14 +400,15 @@ static DWORD wait_single(w32_object *o, DWORD ms)
         }
         if (ready) break;
 
-        int rc = timed ? pthread_cond_timedwait(&o->cond, &o->lock, &ts)
+        int rc = until ? pthread_cond_timedwait(&o->cond, &o->lock, until)
                        : pthread_cond_wait(&o->cond, &o->lock);
-        if (rc == ETIMEDOUT) { result = WAIT_TIMEOUT; break; }
+        if (rc == ETIMEDOUT && until == &ts) { result = WAIT_TIMEOUT; break; }
     }
 
     if (result == WAIT_OBJECT_0) {
         switch (o->kind) {
-        case K_EVENT: if (!o->manual_reset) o->signaled = 0; break;
+        case K_EVENT:
+        case K_WTIMER: if (!o->manual_reset) o->signaled = 0; break;
         case K_SEM:   o->sem_count--; break;
         case K_MUTEX: o->mtx_owner = GetCurrentThreadId(); o->mtx_recursion++; break;
         default: break;
@@ -1452,5 +1483,172 @@ VOID RaiseException(DWORD code, DWORD flags, DWORD nargs, const ULONG_PTR *args)
 PVOID AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler)
 { (void)First; (void)Handler; return NULL; }   /* TODO: wire to sigaction */
 ULONG RemoveVectoredExceptionHandler(PVOID h) { (void)h; return 1; }
+
+/* ===================================================================== */
+/* Slim reader/writer locks                                              */
+/* ===================================================================== */
+
+static pthread_rwlock_t *srw_get(PSRWLOCK l)
+{
+    pthread_rwlock_t *rw = (pthread_rwlock_t *)__atomic_load_n(&l->Ptr, __ATOMIC_ACQUIRE);
+    if (!rw) {
+        pthread_rwlock_t *mine = (pthread_rwlock_t *)malloc(sizeof(*mine));
+        PVOID expected = NULL;
+        pthread_rwlock_init(mine, NULL);
+        if (__atomic_compare_exchange_n(&l->Ptr, &expected, mine, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            rw = mine;
+        } else {
+            pthread_rwlock_destroy(mine);
+            free(mine);
+            rw = (pthread_rwlock_t *)expected;
+        }
+    }
+    return rw;
+}
+
+VOID InitializeSRWLock(PSRWLOCK l)        { l->Ptr = NULL; }
+VOID AcquireSRWLockExclusive(PSRWLOCK l)  { pthread_rwlock_wrlock(srw_get(l)); }
+VOID ReleaseSRWLockExclusive(PSRWLOCK l)  { pthread_rwlock_unlock(srw_get(l)); }
+VOID AcquireSRWLockShared(PSRWLOCK l)     { pthread_rwlock_rdlock(srw_get(l)); }
+VOID ReleaseSRWLockShared(PSRWLOCK l)     { pthread_rwlock_unlock(srw_get(l)); }
+BOOLEAN TryAcquireSRWLockExclusive(PSRWLOCK l) { return pthread_rwlock_trywrlock(srw_get(l)) == 0; }
+
+PVOID InterlockedExchangePointer(PVOID volatile *p, PVOID v)
+{
+    return __atomic_exchange_n(p, v, __ATOMIC_SEQ_CST);
+}
+
+/* ===================================================================== */
+/* Waitable timers                                                       */
+/* ===================================================================== */
+
+HANDLE CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name, DWORD flags, DWORD access)
+{
+    (void)sa; (void)name; (void)access;
+    w32_object *o = obj_alloc(K_WTIMER);
+    o->manual_reset = (flags & CREATE_WAITABLE_TIMER_MANUAL_RESET) != 0;
+    return (HANDLE)o;
+}
+
+HANDLE CreateWaitableTimerW(LPSECURITY_ATTRIBUTES sa, BOOL manualReset, LPCWSTR name)
+{
+    return CreateWaitableTimerExW(sa, name,
+                                  manualReset ? CREATE_WAITABLE_TIMER_MANUAL_RESET : 0,
+                                  TIMER_ALL_ACCESS);
+}
+
+BOOL SetWaitableTimer(HANDLE timer, const LARGE_INTEGER *due, LONG period,
+                      PTIMERAPCROUTINE routine, LPVOID arg, BOOL resume)
+{
+    w32_object *o = (w32_object *)timer;
+    struct timespec now;
+    (void)arg; (void)resume;
+    if (!o || o->kind != K_WTIMER || !due || routine) return FALSE;
+    clock_gettime(CLOCK_REALTIME, &now);
+    pthread_mutex_lock(&o->lock);
+    if (due->QuadPart < 0) {
+        /* relative, in 100 ns units */
+        long long ns = -due->QuadPart * 100LL;
+        o->wt_due.tv_sec  = now.tv_sec + (time_t)(ns / 1000000000LL);
+        o->wt_due.tv_nsec = now.tv_nsec + (long)(ns % 1000000000LL);
+    } else {
+        /* absolute FILETIME (UTC) */
+        long long t = due->QuadPart - (long long)FILETIME_EPOCH_DIFF;
+        if (t < 0) t = 0;
+        o->wt_due.tv_sec  = (time_t)(t / 10000000LL);
+        o->wt_due.tv_nsec = (long)(t % 10000000LL) * 100L;
+    }
+    if (o->wt_due.tv_nsec >= 1000000000L) { o->wt_due.tv_sec++; o->wt_due.tv_nsec -= 1000000000L; }
+    o->wt_period_ms = period;
+    o->wt_armed = 1;
+    o->signaled = 0;
+    pthread_cond_broadcast(&o->cond);
+    pthread_mutex_unlock(&o->lock);
+    return TRUE;
+}
+
+BOOL CancelWaitableTimer(HANDLE timer)
+{
+    w32_object *o = (w32_object *)timer;
+    if (!o || o->kind != K_WTIMER) return FALSE;
+    pthread_mutex_lock(&o->lock);
+    o->wt_armed = 0;
+    pthread_mutex_unlock(&o->lock);
+    return TRUE;
+}
+
+/* ===================================================================== */
+/* Modules, debugging, paths                                             */
+/* ===================================================================== */
+
+HMODULE GetModuleHandleA(LPCSTR name)  { (void)name; return NULL; }
+HMODULE GetModuleHandleW(LPCWSTR name) { (void)name; return NULL; }
+
+DWORD GetModuleFileNameA(HMODULE mod, LPSTR buf, DWORD size)
+{
+    (void)mod;
+    if (!buf || !size) return 0;
+#if defined(__linux__)
+    ssize_t n = readlink("/proc/self/exe", buf, size - 1);
+    if (n < 0) n = 0;
+    buf[n] = 0;
+    return (DWORD)n;
+#else
+    buf[0] = 0;
+    return 0;
+#endif
+}
+
+USHORT CaptureStackBackTrace(ULONG skip, ULONG count, PVOID *frames, PULONG hash)
+{
+    (void)skip; (void)count; (void)frames;
+    if (hash) *hash = 0;
+    return 0;
+}
+
+BOOL IsDebuggerPresent(void) { return FALSE; }
+VOID DebugBreak(void) { }
+BOOL HeapValidate(HANDLE heap, DWORD flags, LPCVOID mem) { (void)heap; (void)flags; (void)mem; return TRUE; }
+
+DWORD GetTempPathA(DWORD size, LPSTR buf)
+{
+#if defined(__SWITCH__)
+    const char *t = "sdmc:/switch/opentricky/tmp/";
+#else
+    const char *t = getenv("TMPDIR");
+    char tmp[512];
+    if (!t || !t[0]) t = "/tmp";
+    snprintf(tmp, sizeof tmp, "%s/", t);
+    t = tmp;
+#endif
+    size_t n = strlen(t);
+    if (!buf || size <= n) return (DWORD)(n + 1);
+    memcpy(buf, t, n + 1);
+    return (DWORD)n;
+}
+
+BOOL CreateDirectoryA(LPCSTR path, LPSECURITY_ATTRIBUTES sa)
+{
+    char p[1024];
+    (void)sa;
+    if (!path) return FALSE;
+    snprintf(p, sizeof p, "%s", path);
+    xbox_path_normalize(p);
+    if (mkdir(p, 0755) == 0) return TRUE;
+    SetLastError(errno == EEXIST ? ERROR_ALREADY_EXISTS : ERROR_PATH_NOT_FOUND);
+    return FALSE;
+}
+
+DWORD GetFileAttributesA(LPCSTR path)
+{
+    char p[1024];
+    struct stat st;
+    if (!path) return INVALID_FILE_ATTRIBUTES;
+    snprintf(p, sizeof p, "%s", path);
+    xbox_path_normalize(p);
+    if (stat(p, &st) != 0) return INVALID_FILE_ATTRIBUTES;
+    return S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+}
 
 #endif /* !_WIN32 */
