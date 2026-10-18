@@ -15,7 +15,19 @@
  */
 
 #include "xbox_memory_layout.h"
+#include "xbox_compact_layout.h"
+_Static_assert(XBOX_COMPACT_RAM_SIZE == XBOX_TOTAL_RAM,
+               "xbox_compact_layout.h and recomp_types.h fold modulo XBOX_TOTAL_RAM");
 #include "kernel.h"
+
+/* Host pointer for a hardware-aperture guest VA from the pump's mem_base
+ * (the base offset). The compact layout folds the aperture onto the slot
+ * after RAM (xbox_compact_layout.h); Windows maps it at its own VA. */
+#if XBOX_COMPACT_LAYOUT
+#define XBOX_HW_PTR(mem_base, va) ((uint8_t *)xbox_host_ptr((uint32_t)(va)))
+#else
+#define XBOX_HW_PTR(mem_base, va) ((mem_base) + (va))
+#endif
 #include <stdio.h>
 #include <string.h>
 
@@ -294,17 +306,17 @@ static void xbox_aci_tick(uint8_t *mem_base)
     for (ch = 0; ch < XBOX_ACI_NABM_CHANNELS; ch++) {
         uint32_t chan = XBOX_ACI_BASE_VA + XBOX_ACI_NABM_OFF +
                         (uint32_t)ch * XBOX_ACI_CHANNEL_STRIDE;
-        volatile uint8_t *cr = (volatile uint8_t *)(mem_base + chan + 0x0B);
+        volatile uint8_t *cr = (volatile uint8_t *)XBOX_HW_PTR(mem_base, chan + 0x0B);
 
         if (!(*cr & XBOX_ACI_CR_RR))
             continue;
 
-        *(volatile uint32_t *)(mem_base + chan + 0x00) = 0;              /* BDBAR */
-        *(volatile uint8_t  *)(mem_base + chan + 0x04) = 0;              /* CIV   */
-        *(volatile uint8_t  *)(mem_base + chan + 0x05) = 0;              /* LVI   */
-        *(volatile uint16_t *)(mem_base + chan + 0x08) = 0;              /* PICB  */
-        *(volatile uint8_t  *)(mem_base + chan + 0x0A) = 0;              /* PIV   */
-        *(volatile uint8_t  *)(mem_base + chan + 0x06) = XBOX_ACI_SR_DCH;
+        *(volatile uint32_t *)XBOX_HW_PTR(mem_base, chan + 0x00) = 0;              /* BDBAR */
+        *(volatile uint8_t  *)XBOX_HW_PTR(mem_base, chan + 0x04) = 0;              /* CIV   */
+        *(volatile uint8_t  *)XBOX_HW_PTR(mem_base, chan + 0x05) = 0;              /* LVI   */
+        *(volatile uint16_t *)XBOX_HW_PTR(mem_base, chan + 0x08) = 0;              /* PICB  */
+        *(volatile uint8_t  *)XBOX_HW_PTR(mem_base, chan + 0x0A) = 0;              /* PIV   */
+        *(volatile uint8_t  *)XBOX_HW_PTR(mem_base, chan + 0x06) = XBOX_ACI_SR_DCH;
         *cr = (uint8_t)(*cr & XBOX_ACI_CR_DONT_CLEAR);
     }
 }
@@ -462,13 +474,13 @@ static DWORD WINAPI xbox_pfifo_pump_thread(LPVOID param)
 
         xbox_aci_tick(mem_base);
 
-        volatile uint32_t *kick = (volatile uint32_t *)(mem_base + XBOX_PFIFO_KICK_VA);
+        volatile uint32_t *kick = (volatile uint32_t *)XBOX_HW_PTR(mem_base, XBOX_PFIFO_KICK_VA);
         if (*kick & XBOX_PFIFO_BUSY_BIT) {
             *kick &= ~XBOX_PFIFO_BUSY_BIT;
         }
 
         {
-            volatile uint32_t *ready = (volatile uint32_t *)(mem_base + XBOX_PGRAPH_READY_VA);
+            volatile uint32_t *ready = (volatile uint32_t *)XBOX_HW_PTR(mem_base, XBOX_PGRAPH_READY_VA);
             *ready ^= XBOX_PGRAPH_READY_BIT;
         }
 
@@ -1088,6 +1100,40 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
      * With file mapping views, we create aliased mappings at 64 MB intervals
      * that all point to the same physical memory.
      */
+#if XBOX_COMPACT_LAYOUT
+    /*
+     * One block holds the guest: RAM, then the 48 MB hardware aperture
+     * (xbox_compact_layout.h). No mirror views -- addresses past RAM fold
+     * back onto it in xbox_resolve_uncached_alias -- and no fixed native
+     * address, so this cannot collide with anything else in the process.
+     */
+    {
+        void *block = NULL;
+#if defined(__SWITCH__)
+        if (posix_memalign(&block, 0x1000, XBOX_COMPACT_HOST_SIZE) != 0) block = NULL;
+        if (block) memset(block, 0, XBOX_COMPACT_HOST_SIZE);
+#else
+        block = VirtualAlloc(NULL, XBOX_COMPACT_HOST_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#endif
+        if (!block) {
+            fprintf(stderr, "xbox_MemoryLayoutInit: could not allocate the %zu MB guest block%s\n",
+                    XBOX_COMPACT_HOST_SIZE / (1024 * 1024),
+#if defined(__SWITCH__)
+                    " -- start the game from a title (hold R while opening a game), not from the "
+                    "album: applet mode has too little memory"
+#else
+                    ""
+#endif
+                    );
+            return FALSE;
+        }
+        g_memory_base = block;
+        g_memory_offset = (uintptr_t)g_memory_base - XBOX_MAP_START;
+        fprintf(stderr, "xbox_MemoryLayoutInit: guest block %zu KB at %p (RAM %u KB, hardware "
+                "aperture after it; addresses past RAM fold onto it)\n",
+                XBOX_COMPACT_HOST_SIZE / 1024, g_memory_base, (unsigned)(g_memory_size / 1024));
+    }
+#else
     g_mapping_handle = CreateFileMappingA(
         INVALID_HANDLE_VALUE,   /* page file backed */
         NULL,                   /* default security */
@@ -1282,6 +1328,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
         fprintf(stderr, "xbox_MemoryLayoutInit: mapped %zu KB at 0x%p (offset %+td from Xbox base)\n",
                 g_memory_size / 1024, g_memory_base, g_memory_offset);
     }
+#endif /* XBOX_COMPACT_LAYOUT */
 
     /*
      * Helper macro: convert Xbox VA to actual mapped address.
@@ -1617,6 +1664,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
      * intervals. All views alias the same physical pages, so reads and
      * writes at any mirror address correctly access the base data.
      */
+#if !XBOX_COMPACT_LAYOUT
     {
         /* The GPU MMIO aperture below is mapped at a *fixed* native address,
          * g_memory_base + 0xFD000000 (48 MB) -- it has to be exactly there
@@ -1730,6 +1778,8 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
             xbox_memlayout_check_aliases(gpu_mmio_offset);
     }
 
+#endif /* !XBOX_COMPACT_LAYOUT: no mirror views */
+
     /*
      * The Xbox "uncached" RAM alias at 0x80000000 (real hardware maps the
      * same physical RAM there a second time, cache-bypassed, for
@@ -1769,9 +1819,15 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
      * intent, but reliably.
      */
     {
+#if XBOX_COMPACT_LAYOUT
+        /* Already part of the guest block. */
+        void *gpu_mmio_base = xbox_host_ptr(0xFD000000u);
+        void *gpu_mmio = gpu_mmio_base;
+#else
         void *gpu_mmio_base = (void *)((uintptr_t)g_memory_base + 0xFD000000u);
         void *gpu_mmio = VirtualAlloc(gpu_mmio_base, 0x03000000u,
                                        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#endif
         if (gpu_mmio && gpu_mmio == gpu_mmio_base) {
             uint8_t *gpu_mmio_bytes = (uint8_t *)gpu_mmio;
             g_gpu_mmio_base = gpu_mmio;
@@ -1852,6 +1908,20 @@ void xbox_MemoryLayoutShutdown(void)
         CloseHandle(g_pfifo_pump_thread);
         g_pfifo_pump_thread = NULL;
     }
+#if XBOX_COMPACT_LAYOUT
+    g_gpu_mmio_base = NULL;
+    if (g_memory_base) {
+#if defined(__SWITCH__)
+        free(g_memory_base);
+#else
+        VirtualFree(g_memory_base, XBOX_COMPACT_HOST_SIZE, MEM_RELEASE);
+#endif
+        g_memory_base = NULL;
+        g_memory_size = 0;
+    }
+    fprintf(stderr, "xbox_MemoryLayoutShutdown: released\n");
+    return;
+#endif
     if (g_gpu_mmio_base) {
         VirtualFree(g_gpu_mmio_base, 0, MEM_RELEASE);
         g_gpu_mmio_base = NULL;

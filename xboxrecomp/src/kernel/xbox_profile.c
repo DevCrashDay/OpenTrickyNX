@@ -21,6 +21,7 @@
  * the Windows tools cannot name its functions, and the guest code is one flat
  * sea of generated functions with no frame pointers to walk.
  */
+#if defined(_WIN32)
 #include <windows.h>
 #include <tlhelp32.h>
 #include <psapi.h>
@@ -318,3 +319,13 @@ void xbox_profile_start_from_env(void)
     h = CreateThread(NULL, 0, prof_main, spec, 0, NULL);
     if (h) CloseHandle(h);
 }
+
+#else /* !_WIN32 */
+
+/* The sampler suspends threads and reads their contexts through the Win32
+ * debugging API; there is no equivalent here, so XBOX_PROFILE is ignored. */
+void xbox_profile_note_stall(long long qpc_start, long long qpc_end)
+{ (void)qpc_start; (void)qpc_end; }
+void xbox_profile_start_from_env(void) { }
+
+#endif /* _WIN32 */

@@ -1,11 +1,29 @@
 /*
  * xbox_perf.c -- per-zone profile of a frame. See xbox_perf.h.
  */
+#if defined(_WIN32)
 #include <windows.h>
+#include <intrin.h>
+#define perf_cycles() __rdtsc()
+#else
+#include "platform/xbox_winnt.h"
+#if defined(__x86_64__) || defined(__i386__)
+#include <x86intrin.h>
+#define perf_cycles() __rdtsc()
+#else
+/* The generic timer stands in for the TSC: a fixed-rate counter, so the
+ * "cycles" it reports are timer ticks (19.2 MHz on the Switch). */
+static inline unsigned long long perf_cycles(void)
+{
+    unsigned long long v;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
+    return v;
+}
+#endif
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <intrin.h>
 #include "xbox_perf.h"
 
 int g_perf_on;
@@ -157,7 +175,7 @@ static void report(int final)
             fprintf(stderr, "\n");
             if (g_perf_maptime) {
                 double ms = perf_now() - s_qpc0;
-                double cyc_per_us = ms > 0 ? (double)(__rdtsc() - s_tsc0) / (ms * 1000.0) : 0;
+                double cyc_per_us = ms > 0 ? (double)(perf_cycles() - s_tsc0) / (ms * 1000.0) : 0;
                 unsigned long long np = g_perf_map_pairs - s_map_pairs0, nc = g_perf_map_cyc - s_map_cyc0;
                 double net = (double)nc - 2.0 * s_rdtsc_ovh * (double)np;
                 fprintf(stderr, "[PERF]   Map+Unmap: %.3f us per pair (%llu pairs; rdtsc overhead %.0f cycles removed, %.0f cycles/us)\n",
@@ -287,11 +305,11 @@ void perf_init(void)
     if (e && e[0] == '1') {
         unsigned long long best = ~0ull, a, b;
         int k;
-        for (k = 0; k < 1000; k++) { a = __rdtsc(); b = __rdtsc(); if (b - a < best) best = b - a; }
+        for (k = 0; k < 1000; k++) { a = perf_cycles(); b = perf_cycles(); if (b - a < best) best = b - a; }
         s_rdtsc_ovh = (double)best;
         g_perf_maptime = 1;
     }
-    s_tsc0 = __rdtsc();
+    s_tsc0 = perf_cycles();
     s_qpc0 = perf_now();
     s_win_t0 = perf_now();
     g_perf_on = 1;

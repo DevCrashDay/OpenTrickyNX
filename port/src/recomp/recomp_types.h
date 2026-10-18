@@ -545,10 +545,37 @@ extern __thread int      g_cmp_test;   /* 1 = `test` (CF/OF clear), 0 = `cmp` */
 #ifndef FORK_FAST_RESOLVE
 #define FORK_FAST_RESOLVE 1
 #endif
+/*
+ * Compact guest layout (every host but Windows; xboxrecomp's
+ * xbox_compact_layout.h): the guest lives in one block of RAM plus the 48 MB
+ * hardware aperture, so ordinary addresses are only identity below the RAM
+ * size and everything else folds -- the aperture to the slot after RAM, the
+ * rest modulo RAM, the bytes Windows' mirror views alias. Must match
+ * xbox_compact_fold.
+ */
+#ifndef XBOX_COMPACT_LAYOUT
+#if defined(_WIN32)
+#define XBOX_COMPACT_LAYOUT 0
+#else
+#define XBOX_COMPACT_LAYOUT 1
+#endif
+#endif
+#if XBOX_COMPACT_LAYOUT
+#define XBOX_IDENTITY_LIMIT 0x08C00000u /* XBOX_TOTAL_RAM */
+static inline uint32_t xbox_recomp_fold(uint32_t va) {
+    if (va < XBOX_IDENTITY_LIMIT) return va;
+    if (va >= 0xFD000000u) return XBOX_IDENTITY_LIMIT + (va - 0xFD000000u);
+    return va % XBOX_IDENTITY_LIMIT;
+}
+#else
+#define XBOX_IDENTITY_LIMIT 0x80000000u
+#define xbox_recomp_fold(va) (va)
+#endif
+
 #if FORK_FAST_RESOLVE
 static uint32_t xbox_resolve_uncached_alias_slow(uint32_t va) __attribute__((noinline, unused));
 static inline __attribute__((always_inline)) uint32_t xbox_resolve_uncached_alias(uint32_t va) {
-    if (__builtin_expect((uint32_t)(va - 0x100u) < 0x80000000u - 0x100u, 1))
+    if (__builtin_expect((uint32_t)(va - 0x100u) < XBOX_IDENTITY_LIMIT - 0x100u, 1))
         return va;
     /* The D3D runtime writes the push buffer through the uncached and
      * write-combined aliases: as hot as ordinary addresses in a race. */
@@ -635,7 +662,7 @@ static inline uint32_t xbox_resolve_uncached_alias(uint32_t va) {
     if (va >= 0xF0000000u && va < 0xF4000000u) {
         return va & 0x03FFFFFFu;
     }
-    return va;
+    return xbox_recomp_fold(va);
 }
 
 /**

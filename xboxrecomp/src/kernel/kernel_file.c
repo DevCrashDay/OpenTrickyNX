@@ -1601,7 +1601,14 @@ NTSTATUS __stdcall xbox_NtQueryVolumeInformationFile(
             int fd = w32_handle_fd(FileHandle);
             info->BytesPerSector = 512;
             info->SectorsPerAllocationUnit = 8;
+#if defined(__SWITCH__)
+            /* newlib on the Switch has statvfs (by path) but not fstatvfs. */
+            const char *fs_path = w32_handle_path(FileHandle);
+            (void)fd;
+            if (fs_path && statvfs(fs_path, &vfs) == 0) {
+#else
             if (fd >= 0 && fstatvfs(fd, &vfs) == 0) {
+#endif
                 ULONGLONG cs = (ULONGLONG)info->BytesPerSector * info->SectorsPerAllocationUnit;
                 ULONGLONG total = (ULONGLONG)vfs.f_blocks * vfs.f_frsize;
                 ULONGLONG avail = (ULONGLONG)vfs.f_bavail * vfs.f_frsize;

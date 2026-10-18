@@ -26,9 +26,12 @@
  */
 
 #include "xbox_perf.h"
+#if defined(_WIN32)
 #include <xmmintrin.h>
+#endif
 #include "kernel.h"
 #include "xbox_memory_layout.h"
+#include "xbox_compact_layout.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <float.h>
@@ -3717,6 +3720,10 @@ static void bridge_MmClaimGpuInstanceMemory(void)     /* 168, 2 args */
     PVOID p = xbox_MmClaimGpuInstanceMemory(
         STACK_ARG(0), (PULONG)XBOX_TO_NATIVE(STACK_ARG(1)));
     g_eax = p ? (uint32_t)((uintptr_t)p - g_xbox_mem_offset) : 0u;
+#if XBOX_COMPACT_LAYOUT
+    /* The block sits in the aperture slot after RAM; report its real VA. */
+    if (p) g_eax = xbox_compact_unfold(g_eax);
+#endif
 }
 
 static void bridge_MmLockUnlockPhysicalPage(void)     /* 176, 2 args */
@@ -4327,6 +4334,8 @@ static void xbox_apply_tls_index_once(void)
 static volatile LONG g_trap_nan_armed = 0;
 static __thread int  t_trap_nan_on = 0;
 
+#if defined(_WIN32)
+
 /* Report an invalid-operation trap with a native backtrace, then mask the
  * exception again in the faulting context and retry: the operation produces
  * its NaN as it would have, and the run continues to the next report. */
@@ -4365,13 +4374,21 @@ static void trap_nan_check_path(const char *path)
         fflush(stderr);
     }
 }
+#else
+/* x86 MXCSR trapping through a vectored handler: Windows only. */
+static void trap_nan_check_path(const char *path) { (void)path; }
+#endif
 
 static void kernel_thunk_dispatch(void)
 {
+#if defined(_WIN32)
     if (g_trap_nan_armed && !t_trap_nan_on) {
         t_trap_nan_on = 1;
         _mm_setcsr(_mm_getcsr() & ~0x0080u);   /* unmask invalid (IM) */
     }
+#else
+    (void)t_trap_nan_on;
+#endif
     xbox_apply_tls_index_once();
     /* Sample the push buffer on the guest's own thread while the translator is
      * still coming up. The 1 ms pump cannot see D3D init -- the title emits its

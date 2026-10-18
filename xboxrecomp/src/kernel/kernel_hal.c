@@ -15,9 +15,9 @@
 #include "xbox_memory_layout.h"
 #if defined(_WIN32)
 #include <intrin.h>
+#endif
 #include <stdio.h>
 #include <stddef.h>
-#endif
 
 /* ============================================================================
  * IRQL Simulation

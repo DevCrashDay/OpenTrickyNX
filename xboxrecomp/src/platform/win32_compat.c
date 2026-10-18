@@ -25,7 +25,11 @@
 #include <unistd.h>
 #include <sched.h>
 #include <fenv.h>
+#if !defined(__SWITCH__)
 #include <sys/mman.h>
+#else
+#include <switch.h>
+#endif
 #include <sys/stat.h>
 #if defined(__linux__)
 #include <sys/sysinfo.h>
@@ -897,6 +901,7 @@ SIZE_T HeapSize(HANDLE heap, DWORD flags, LPCVOID mem)
     return 0;   /* glibc malloc_usable_size could be used; not needed yet */
 }
 
+#if !defined(__SWITCH__)
 /* ===================================================================== */
 /* Virtual memory                                                        */
 /* ===================================================================== */
@@ -952,6 +957,8 @@ BOOL VirtualProtect(LPVOID address, SIZE_T size, DWORD newProtect, PDWORD oldPro
     if (oldProtect) *oldProtect = PAGE_READWRITE;
     return mprotect(address, size, prot_from_page(newProtect)) == 0;
 }
+
+#endif /* !__SWITCH__ (virtual memory) */
 
 /* ===================================================================== */
 /* Time                                                                  */
@@ -1033,7 +1040,11 @@ VOID OutputDebugStringA(LPCSTR str)
 
 VOID ExitProcess(UINT exitCode) { exit((int)exitCode); }
 
-VOID SecureZeroMemory(PVOID ptr, SIZE_T cnt) { explicit_bzero(ptr, cnt); }
+VOID SecureZeroMemory(PVOID ptr, SIZE_T cnt)
+{
+    volatile unsigned char *p = (volatile unsigned char *)ptr;
+    while (cnt--) *p++ = 0;
+}
 
 unsigned int _clearfp(void)
 {
@@ -1246,6 +1257,7 @@ int WideCharToMultiByte(UINT cp, DWORD flags, LPCWSTR wide, int wideCount,
     return out;
 }
 
+#if !defined(__SWITCH__)
 /* ===================================================================== */
 /* File mapping (memfd-backed) -- true aliased mirror views              */
 /* ===================================================================== */
@@ -1367,6 +1379,155 @@ BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
     return TRUE;
 }
 
+#else /* __SWITCH__ */
+
+/* ===================================================================== */
+/* Switch: virtual memory, file mappings, memory status                  */
+/* ===================================================================== */
+
+/* Applications cannot place memory at an address of their choosing, and
+ * cannot map the same memory twice. VirtualAlloc(NULL) is page-aligned heap
+ * memory; a non-NULL address is honoured only when it is already ours (a
+ * commit inside an existing block). File mappings are not available: the
+ * guest RAM layout uses one block instead (xbox_compact_layout.h). */
+
+typedef struct { void *addr; size_t len; } nx_block;
+static nx_block        s_blocks[256];
+static pthread_mutex_t s_blocks_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static size_t block_len(const void *addr, int take)
+{
+    size_t len = 0;
+    pthread_mutex_lock(&s_blocks_lock);
+    for (int i = 0; i < 256; i++)
+        if (s_blocks[i].addr == addr) {
+            len = s_blocks[i].len;
+            if (take) s_blocks[i].addr = NULL;
+            break;
+        }
+    pthread_mutex_unlock(&s_blocks_lock);
+    return len;
+}
+
+static Permission perm_from_page(DWORD protect)
+{
+    switch (protect & 0xFF) {
+    case PAGE_NOACCESS: return Perm_None;
+    case PAGE_READONLY: case PAGE_EXECUTE_READ: return Perm_R;
+    default: return Perm_Rw;
+    }
+}
+
+LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD protect)
+{
+    void *p;
+    (void)allocationType;
+    if (address) {
+        /* Commit inside memory we already own: nothing to do. */
+        MemoryInfo mi; u32 pi;
+        if (R_SUCCEEDED(svcQueryMemory(&mi, &pi, (u64)address)) && mi.type != MemType_Unmapped)
+            return address;
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+    size = (size + 0xFFF) & ~(SIZE_T)0xFFF;
+    if (posix_memalign(&p, 0x1000, size) != 0) p = NULL;
+    if (!p) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
+    memset(p, 0, size);
+    if ((protect & 0xFF) != PAGE_READWRITE && (protect & 0xFF) != 0)
+        svcSetMemoryPermission(p, size, perm_from_page(protect));
+    pthread_mutex_lock(&s_blocks_lock);
+    for (int i = 0; i < 256; i++)
+        if (!s_blocks[i].addr) { s_blocks[i].addr = p; s_blocks[i].len = size; break; }
+    pthread_mutex_unlock(&s_blocks_lock);
+    return p;
+}
+
+BOOL VirtualFree(LPVOID address, SIZE_T size, DWORD freeType)
+{
+    (void)size;
+    if (freeType & MEM_RELEASE) {
+        size_t len = block_len(address, 1);
+        if (!len) return FALSE;
+        svcSetMemoryPermission(address, len, Perm_Rw);
+        free(address);
+    }
+    return TRUE;
+}
+
+BOOL VirtualProtect(LPVOID address, SIZE_T size, DWORD newProtect, PDWORD oldProtect)
+{
+    uintptr_t a = (uintptr_t)address & ~(uintptr_t)0xFFF;
+    size = ((uintptr_t)address + size - a + 0xFFF) & ~(SIZE_T)0xFFF;
+    if (oldProtect) *oldProtect = PAGE_READWRITE;
+    return R_SUCCEEDED(svcSetMemoryPermission((void *)a, size, perm_from_page(newProtect)));
+}
+
+HANDLE CreateFileMappingA(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect,
+                          DWORD maxSizeHigh, DWORD maxSizeLow, LPCSTR name)
+{
+    (void)file; (void)sa; (void)protect; (void)maxSizeHigh; (void)maxSizeLow; (void)name;
+    SetLastError(ERROR_NOT_SUPPORTED);
+    return NULL;
+}
+
+HANDLE CreateFileMappingW(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect,
+                          DWORD maxSizeHigh, DWORD maxSizeLow, LPCWSTR name)
+{
+    (void)name;
+    return CreateFileMappingA(file, sa, protect, maxSizeHigh, maxSizeLow, NULL);
+}
+
+LPVOID MapViewOfFileEx(HANDLE mapping, DWORD access, DWORD offHigh, DWORD offLow,
+                       SIZE_T count, LPVOID baseAddr)
+{
+    (void)mapping; (void)access; (void)offHigh; (void)offLow; (void)count; (void)baseAddr;
+    SetLastError(ERROR_NOT_SUPPORTED);
+    return NULL;
+}
+
+LPVOID MapViewOfFile(HANDLE mapping, DWORD access, DWORD offHigh, DWORD offLow, SIZE_T count)
+{
+    return MapViewOfFileEx(mapping, access, offHigh, offLow, count, NULL);
+}
+
+BOOL UnmapViewOfFile(LPCVOID baseAddr) { (void)baseAddr; return FALSE; }
+
+SIZE_T VirtualQuery(LPCVOID address, PMEMORY_BASIC_INFORMATION buffer, SIZE_T length)
+{
+    MemoryInfo mi; u32 pi;
+    if (!buffer || length < sizeof(*buffer)) return 0;
+    memset(buffer, 0, sizeof(*buffer));
+    if (R_FAILED(svcQueryMemory(&mi, &pi, (u64)address))) return 0;
+    buffer->BaseAddress    = (PVOID)((uintptr_t)address & ~(uintptr_t)0xFFF);
+    buffer->AllocationBase = (PVOID)(uintptr_t)mi.addr;
+    buffer->RegionSize     = (SIZE_T)(mi.addr + mi.size - (uintptr_t)buffer->BaseAddress);
+    buffer->State          = mi.type == MemType_Unmapped ? MEM_FREE : MEM_COMMIT;
+    buffer->Protect        = mi.perm == Perm_None ? PAGE_NOACCESS :
+                             mi.perm == Perm_R ? PAGE_READONLY : PAGE_READWRITE;
+    buffer->Type           = MEM_PRIVATE;
+    return sizeof(*buffer);
+}
+
+BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
+{
+    u64 total = 0, used = 0;
+    if (!b) return FALSE;
+    svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
+    svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
+    b->ullTotalPhys     = total;
+    b->ullAvailPhys     = total > used ? total - used : 0;
+    b->ullTotalPageFile = b->ullTotalPhys;
+    b->ullAvailPageFile = b->ullAvailPhys;
+    b->ullTotalVirtual  = b->ullTotalPhys;
+    b->ullAvailVirtual  = b->ullAvailPhys;
+    b->ullAvailExtendedVirtual = 0;
+    b->dwMemoryLoad = total ? (DWORD)(used * 100 / total) : 0;
+    return TRUE;
+}
+
+#endif /* __SWITCH__ (file mapping) */
+
 /* ===================================================================== */
 /* Aligned allocation                                                     */
 /* ===================================================================== */
@@ -1430,6 +1591,21 @@ WCHAR *xbox_wcscpy(WCHAR *dst, const WCHAR *src)
 /* ===================================================================== */
 /* Time conversion                                                        */
 /* ===================================================================== */
+
+#if defined(__SWITCH__)
+/* newlib has no timegm: days from the civil date (H. Hinnant's algorithm). */
+static time_t timegm(struct tm *tm)
+{
+    long long y = tm->tm_year + 1900, m = tm->tm_mon + 1, d = tm->tm_mday;
+    y -= m <= 2;
+    long long era = (y >= 0 ? y : y - 399) / 400;
+    long long yoe = y - era * 400;
+    long long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long long days = era * 146097 + doe - 719468;
+    return (time_t)(days * 86400 + tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec);
+}
+#endif
 
 BOOL SystemTimeToFileTime(const SYSTEMTIME *st, LPFILETIME ft)
 {
