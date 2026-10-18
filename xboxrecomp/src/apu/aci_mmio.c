@@ -388,5 +388,37 @@ bool aci_mmio_install(void *mem_base)
 }
 
 #else
-bool aci_mmio_install(void *mem_base) { (void)mem_base; return false; }
+#include "platform/host_fault.h"
+#include "kernel/xbox_compact_layout.h"
+
+/* Every other host: the same registers, reached through host_fault's
+ * load/store decoder instead of the Windows exception handler above. */
+static bool aci_trap_access(uint32_t va, unsigned size, int is_write, uint64_t *val)
+{
+    uint32_t off = va - XBOX_ACI_MMIO_BASE;
+    if (is_write) aci_write(off, *val, size);
+    else          *val = aci_read(off, size);
+    return true;
+}
+
+bool aci_mmio_install(void *mem_base)
+{
+    int ch;
+    (void)mem_base; /* the trap is placed through xbox_host_ptr */
+
+    memset(g_aci_regs, 0, sizeof(g_aci_regs));
+    for (ch = 0; ch < ACI_NABM_CHANNELS; ch++)
+        g_aci_regs[ACI_NABM_OFF + ch * ACI_CHANNEL_STRIDE + 0x06] = ACI_SR_DCH;
+
+    if (!host_trap_register(xbox_host_ptr(XBOX_ACI_MMIO_BASE), XBOX_ACI_MMIO_BASE,
+                            XBOX_ACI_MMIO_SIZE, aci_trap_access)) {
+        fprintf(stderr, "  [ACI] could not guard the aperture -- audio registers stay plain RAM\n");
+        fflush(stderr);
+        return false;
+    }
+    fprintf(stderr, "  [ACI] AC'97 aperture trapped at Xbox VA 0x%08X (%u bytes)\n",
+            XBOX_ACI_MMIO_BASE, XBOX_ACI_MMIO_SIZE);
+    fflush(stderr);
+    return true;
+}
 #endif /* _WIN32 */
