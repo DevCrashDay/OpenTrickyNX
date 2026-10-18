@@ -155,50 +155,6 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
              path_u8(s_game_dir, u8a, (int)sizeof u8a), path_u8(s_save_dir, u8b, (int)sizeof u8b));
 }
 
-/*
- * Point T: and U: at this title's own save directories.
- *
- * On hardware these drive letters are per-title views of \TDATA\<id> and
- * \UDATA\<id>, which is also where the title's \Device\Harddisk0\Partition1\
- * paths land. Without this they resolved to separate directories and the two
- * routes disagreed about where saves live. Safe to call before or after
- * xbox_path_init; the rules table holds pointers to these buffers.
- */
-void xbox_path_set_title_id(unsigned int title_id)
-{
-    snprintf(s_tdata_win,   sizeof s_tdata_win,   "\\TDATA\\%08X", title_id);
-    snprintf(s_udata_win,   sizeof s_udata_win,   "\\UDATA\\%08X", title_id);
-    snprintf(s_tdata_posix, sizeof s_tdata_posix, "/TDATA/%08X",   title_id);
-    snprintf(s_udata_posix, sizeof s_udata_posix, "/UDATA/%08X",   title_id);
-}
-
-/*
- * Is this Xbox path on the game disc, and if so what follows the prefix?
- *
- * "Game disc" means any rule that resolves under the game directory
- * (to_save == 0) -- \Device\CdRom0\, D:\, Y:\ and their \??\ forms. The
- * hard-disk rule (Partition1, where TDATA/UDATA live) is to_save == 1 and
- * so is deliberately excluded: saves must keep going to the real
- * filesystem even when the disc itself is served from an ISO.
- *
- * Used by the file layer to decide whether a path should be resolved
- * inside a mounted XDVDFS image instead of on the host filesystem.
- */
-BOOL xbox_path_split_game_disc(const char* xbox_path, const char** remainder)
-{
-    if (!xbox_path) return FALSE;
-    if (!s_initialized) xbox_path_init(NULL, NULL);
-
-    for (int i = 0; i < PATH_RULE_COUNT; i++) {
-        if (s_rules[i].to_save) continue;
-        int skip = match_prefix(xbox_path, s_rules[i].prefix);
-        if (skip) {
-            if (remainder) *remainder = xbox_path + skip;
-            return TRUE;
-        }
-    }
-    return FALSE;
-}
 
 BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, DWORD buf_size)
 {
@@ -324,6 +280,7 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
 
     strip_trailing_slash(s_game_dir);
     strip_trailing_slash(s_save_dir);
+    mkdir_p(s_save_dir);    /* the hard disk (Partition1) maps straight onto it */
 
     s_initialized = TRUE;
     xbox_log(XBOX_LOG_INFO, XBOX_LOG_PATH, "Path init: game=%s, save=%s",
@@ -387,3 +344,52 @@ translate:
 }
 
 #endif /* _WIN32 */
+
+/* ======================================================================== */
+/* Both backends */
+
+/*
+ * Point T: and U: at this title's own save directories.
+ *
+ * On hardware these drive letters are per-title views of \TDATA\<id> and
+ * \UDATA\<id>, which is also where the title's \Device\Harddisk0\Partition1\
+ * paths land. Without this they resolved to separate directories and the two
+ * routes disagreed about where saves live. Safe to call before or after
+ * xbox_path_init; the rules table holds pointers to these buffers.
+ */
+void xbox_path_set_title_id(unsigned int title_id)
+{
+    snprintf(s_tdata_win,   sizeof s_tdata_win,   "\\TDATA\\%08X", title_id);
+    snprintf(s_udata_win,   sizeof s_udata_win,   "\\UDATA\\%08X", title_id);
+    snprintf(s_tdata_posix, sizeof s_tdata_posix, "/TDATA/%08X",   title_id);
+    snprintf(s_udata_posix, sizeof s_udata_posix, "/UDATA/%08X",   title_id);
+}
+
+/*
+ * Is this Xbox path on the game disc, and if so what follows the prefix?
+ *
+ * "Game disc" means any rule that resolves under the game directory
+ * (to_save == 0) -- \Device\CdRom0\, D:\, Y:\ and their \??\ forms. The
+ * hard-disk rule (Partition1, where TDATA/UDATA live) is to_save == 1 and
+ * so is deliberately excluded: saves must keep going to the real
+ * filesystem even when the disc itself is served from an ISO.
+ *
+ * Used by the file layer to decide whether a path should be resolved
+ * inside a mounted XDVDFS image instead of on the host filesystem.
+ */
+BOOL xbox_path_split_game_disc(const char* xbox_path, const char** remainder)
+{
+    if (!xbox_path) return FALSE;
+    if (!s_initialized) xbox_path_init(NULL, NULL);
+
+    for (int i = 0; i < PATH_RULE_COUNT; i++) {
+        if (s_rules[i].to_save) continue;
+        int skip = match_prefix(xbox_path, s_rules[i].prefix);
+        if (skip) {
+            if (remainder) *remainder = xbox_path + skip;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
