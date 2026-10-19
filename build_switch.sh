@@ -36,8 +36,7 @@ if [ -z "$PY" ] && [ "$ON_WINDOWS" = 1 ]; then
     PY="${MINGW_PREFIX:-/ucrt64}/bin/python.exe"
     if [ ! -x "$PY" ]; then
         echo "MSYS2's Python is not installed. In the MSYS2 UCRT64 shell:"
-        echo "  pacman -S --needed mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-python-capstone \\"
-        echo "            mingw-w64-ucrt-x86_64-python-numpy mingw-w64-ucrt-x86_64-python-pillow"
+        echo "  pacman -S --needed mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-python-capstone mingw-w64-ucrt-x86_64-python-numpy mingw-w64-ucrt-x86_64-python-pillow mingw-w64-ucrt-x86_64-binutils"
         exit 1
     fi
 elif [ -z "$PY" ]; then
@@ -50,6 +49,15 @@ fi
         echo "  pacman -S --needed mingw-w64-ucrt-x86_64-python-capstone mingw-w64-ucrt-x86_64-python-numpy mingw-w64-ucrt-x86_64-python-pillow"
     else
         echo "Python needs capstone, numpy and pillow:  $PY -m pip install capstone numpy pillow"
+    fi
+    exit 1
+}
+# The fix-up passes disassemble with GNU objdump.
+command -v objdump >/dev/null 2>&1 || {
+    if [ "$ON_WINDOWS" = 1 ]; then
+        echo "objdump is missing. In the MSYS2 UCRT64 shell:  pacman -S --needed mingw-w64-ucrt-x86_64-binutils"
+    else
+        echo "objdump is missing: install binutils."
     fi
     exit 1
 }
