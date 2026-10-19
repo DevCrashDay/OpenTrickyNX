@@ -67,7 +67,23 @@ static bool host_fault_install(void);
 static bool protect_none(void *host, size_t size)
 {
 #if defined(__SWITCH__)
-    return R_SUCCEEDED(svcSetMemoryPermission(host, size, Perm_None));
+    /* A system call the loader does not grant ends the program on the spot,
+     * without an error: ask first (SetMemoryPermission 0x02, and
+     * ReturnFromException 0x28 for the handler to resume). */
+    static int logged;
+    Result rc;
+    if (!envIsSyscallHinted(0x02) || !envIsSyscallHinted(0x28)) {
+        if (!logged++)
+            fprintf(stderr, "  [trap] SetMemoryPermission %d, ReturnFromException %d granted: "
+                            "hardware registers not trapped\n",
+                    envIsSyscallHinted(0x02), envIsSyscallHinted(0x28));
+        return false;
+    }
+    fprintf(stderr, "  [trap] protecting %zu KB at %p\n", size / 1024, host);
+    fflush(stderr);
+    rc = svcSetMemoryPermission(host, size, Perm_None);
+    if (R_FAILED(rc)) fprintf(stderr, "  [trap] SetMemoryPermission failed: 0x%X\n", rc);
+    return R_SUCCEEDED(rc);
 #else
     return mprotect(host, size, PROT_NONE) == 0;
 #endif
