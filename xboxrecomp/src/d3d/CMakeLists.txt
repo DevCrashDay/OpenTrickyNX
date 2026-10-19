@@ -73,15 +73,40 @@ elseif(XBOX_VULKAN)
                     set(_VULKAN_SWITCH_${var}_LIBRARY "${NVK_SDK}/lib/lib${lib}.a" CACHE FILEPATH "" FORCE)
                 endif()
             endforeach()
+            # NVK calls nothing in libelf, which devkitPro does not package:
+            # without it, a library the link has anyway stands in
+            find_library(_VULKAN_SWITCH_ELF_LIBRARY elf)
+            if(NOT _VULKAN_SWITCH_ELF_LIBRARY)
+                set(_VULKAN_SWITCH_ELF_LIBRARY m CACHE STRING "" FORCE)
+            endif()
             # set ahead: the Switch toolchain only searches its own sysroot
             set(Vulkan_LIBRARY "${NVK_SDK}/lib/libvulkan.a" CACHE FILEPATH "" FORCE)
             set(Vulkan_INCLUDE_DIR "${NVK_SDK}/include" CACHE PATH "" FORCE)
             include("${NVK_SDK}/lib/cmake/Vulkan/VulkanConfig.cmake")
-            if(NOT TARGET Vulkan::Vulkan)
+            if(NOT Vulkan_FOUND)
                 message(FATAL_ERROR "NVK_SDK=${NVK_SDK}: VulkanConfig.cmake found no usable Vulkan")
             endif()
+            target_include_directories(xbox_d3d8 PUBLIC ${Vulkan_INCLUDE_DIRS})
+            # the package's own list, in one link group of ours ($<LINK_GROUP>
+            # is not available to C targets with this toolchain)
             target_link_libraries(xbox_d3d8 PUBLIC platform SDL2::SDL2
-                -Wl,--start-group ${GLSLANG_LIBS} -Wl,--end-group Vulkan::Vulkan nx stdc++ m)
+                -Wl,--start-group ${GLSLANG_LIBS} ${_VULKAN_SWITCH_LIBRARIES} -Wl,--end-group nx stdc++ m
+                -Wl,-u,vk_icdGetInstanceProcAddr -Wl,-u,vk_icdNegotiateLoaderICDInterfaceVersion -pthread)
+            # devkitPro's SDL2 links the EGL of its own Mesa 20.1, which
+            # clashes with this one: the SDK's EGL and glapi instead (the
+            # full mesa-switch SDK has them), and no libdrm_nouveau
+            if(EXISTS "${NVK_SDK}/lib/libEGL.a")
+                # the static library's target, made global by port/posix.cmake
+                get_target_property(_sdl_libs SDL2::SDL2-static INTERFACE_LINK_LIBRARIES)
+                if(_sdl_libs)
+                    string(REPLACE "-lEGL" "${NVK_SDK}/lib/libEGL.a" _sdl_libs "${_sdl_libs}")
+                    string(REPLACE "-lglapi" "${NVK_SDK}/lib/libglapi.a" _sdl_libs "${_sdl_libs}")
+                    string(REPLACE "-ldrm_nouveau" "" _sdl_libs "${_sdl_libs}")
+                    set_target_properties(SDL2::SDL2-static PROPERTIES INTERFACE_LINK_LIBRARIES "${_sdl_libs}")
+                endif()
+            else()
+                message(WARNING "NVK_SDK has no libEGL.a: SDL2 links devkitPro's own Mesa next to NVK (use the full mesa-switch SDK)")
+            endif()
         else()
             find_library(NVK_LIBRARY NAMES vulkan_nouveau vulkan PATHS ${NVK_SDK}/lib REQUIRED NO_DEFAULT_PATH)
             target_include_directories(xbox_d3d8 PUBLIC ${NVK_SDK}/include)

@@ -164,6 +164,11 @@ if(OT_RELEASE)
 endif()
 
 find_package(SDL2 REQUIRED)
+# Seen by xboxrecomp too: the Vulkan build on the Switch swaps the Mesa that
+# devkitPro's SDL2 links for mesa-switch's (xboxrecomp/src/d3d/CMakeLists.txt).
+if(NINTENDO_SWITCH AND TARGET SDL2::SDL2-static)
+    set_target_properties(SDL2::SDL2-static PROPERTIES IMPORTED_GLOBAL TRUE)
+endif()
 target_include_directories(ssx_host PRIVATE ${SDL2_INCLUDE_DIRS})
 target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp SDL2::SDL2 m)
 
