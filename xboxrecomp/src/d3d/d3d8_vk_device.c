@@ -295,7 +295,7 @@ static void host_pump_events(void)
     f = InterlockedExchange(&s_req_fullscreen, -1);
     if (f >= 0) host_set_fullscreen((int)f);
     cw = InterlockedExchange(&s_req_client_w, 0);
-    if (cw > 0) {
+    if (cw > 0 && s_win) {
         LONG ch = s_req_client_h;
         if (s_fullscreen) host_set_fullscreen(0);
         SDL_RestoreWindow(s_win);
@@ -1130,7 +1130,11 @@ static void host_present_impl(void)
     VkdState *s = &g_vkd;
     extern void d3d8_pump_frame_tick(void);
     d3d8_pump_frame_tick();
+#if defined(__SWITCH__)
+    if (!s->initialized || !vkd_on_render_thread()) return;     /* no SDL window there */
+#else
     if (!s->initialized || !s_win || !vkd_on_render_thread()) return;
+#endif
 
     vkd_resources_flush_deletes();
     vkd_scene_resolve();
