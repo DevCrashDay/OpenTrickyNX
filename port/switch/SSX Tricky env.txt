@@ -29,6 +29,9 @@ OT_MEM_MHZ=1600
 # second time a scene is drawn smooth), and 1 to log shaders that fail.
 #XBOX_VK_PIPECACHE=vk_pipeline.cache
 #XBOX_VK_DEBUG=0
+# 1: paint the left half of every frame magenta (shows whether frames reach
+# the screen at all, when the Vulkan picture stays black).
+#XBOX_VK_TESTCOLOR=1
 
 # ── Picture ─────────────────────────────────────────────────────────
 # Frame rate limit: 60, 30, ... or 0 for none.

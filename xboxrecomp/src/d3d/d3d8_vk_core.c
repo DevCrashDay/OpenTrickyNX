@@ -1307,8 +1307,9 @@ static int swapchain_build(void)
     s_sc_stale = 0;
     {
         static const char *const names[] = { "immediate", "mailbox", "fifo", "fifo relaxed" };
-        fprintf(stderr, "D3D8: Vulkan swapchain %ux%u, %u images, %s\n", s_sc_ext.width, s_sc_ext.height,
-                s_sc_n, (unsigned)mode < 4 ? names[mode] : "?");
+        fprintf(stderr, "D3D8: Vulkan swapchain %ux%u, %u images, %s, format %d (of %u), transform 0x%X\n",
+                s_sc_ext.width, s_sc_ext.height, s_sc_n, (unsigned)mode < 4 ? names[mode] : "?",
+                (int)g_vk.sc_format, nf, (unsigned)ci.preTransform);
         fflush(stderr);
     }
     return 1;
@@ -1370,6 +1371,17 @@ void vkd_present_end(void)
         s_frame_no++;
         s_cur = -1;
         return;
+    }
+    {
+        /* XBOX_VK_TESTCOLOR=1: paint the left half magenta, to tell a frame
+         * that never reaches the screen from one that arrives black. */
+        static int test = -1;
+        if (test < 0) { const char *e = getenv("XBOX_VK_TESTCOLOR"); test = e && *e == '1'; }
+        if (test) {
+            VkClearAttachment a = { VK_IMAGE_ASPECT_COLOR_BIT, 0, { { { 1.0f, 0.0f, 1.0f, 1.0f } } } };
+            VkClearRect cr = { { { 0, 0 }, { s_sc_ext.width / 2, s_sc_ext.height } }, 0, 1 };
+            vkCmdClearAttachments(s_main, 1, &a, 1, &cr);
+        }
     }
     vkCmdEndRendering(s_main);
     s_rendering = 0;
