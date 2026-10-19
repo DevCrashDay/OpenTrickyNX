@@ -461,6 +461,9 @@ static DWORD WINAPI xbox_pfifo_pump_thread(LPVOID param)
     uint32_t last_put = 0, seen_put = 0;
     int idle = 0;
 
+#if defined(__SWITCH__)
+    xbox_switch_thread_core(1);         /* the renderer: a core of its own */
+#endif
     while (g_pfifo_pump_running) {
         g_pump_beats++;
         /* Guest .text must not change after load. A jump table at Xbox VA

@@ -180,6 +180,9 @@ BOOL   SetThreadPriority(HANDLE h, int priority);
 /* A host timing thread (vblank, kernel timers, APU frames) raises itself to a
  * real Horizon priority; SetThreadPriority only records one. */
 void   xbox_switch_host_priority(int priority);
+/* Put the calling thread on core `ideal` (0 the game, 1 the pushbuffer
+ * pump, 2 everything else), free to move to the others. */
+void   xbox_switch_thread_core(int ideal);
 #endif
 int    GetThreadPriority(HANDLE h);
 VOID   SwitchToThread(void);

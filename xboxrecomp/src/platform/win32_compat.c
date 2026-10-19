@@ -660,6 +660,9 @@ static void *thread_trampoline(void *arg)
     w32_object *o = (w32_object *)arg;
     t_self_obj = o;
     t_tid      = o->tid;
+#if defined(__SWITCH__)
+    xbox_switch_thread_core(2);         /* off the game's core */
+#endif
 
     /* CREATE_SUSPENDED gate */
     pthread_mutex_lock(&o->lock);
@@ -797,6 +800,24 @@ void xbox_switch_host_priority(int priority)
     if (!prio || (e && e[0] == '0')) return;
     svcSetThreadPriority(CUR_THREAD_HANDLE, prio);
 }
+
+/* Horizon creates a thread on the process's default core with only that core
+ * in its mask: left alone, the game, the pushbuffer pump, the audio and the
+ * timers all share core 0 while 1 and 2 idle. Each thread names its usual
+ * core and may run on any of the three an application has.
+ * OT_CORES=0 leaves them all on core 0. */
+void xbox_switch_thread_core(int ideal)
+{
+    static int on = -1;
+    Result rc;
+    if (on < 0) { const char *e = getenv("OT_CORES"); on = !(e && e[0] == '0'); }
+    if (!on) return;
+    rc = svcSetThreadCoreMask(CUR_THREAD_HANDLE, ideal, 0x7);
+    if (R_FAILED(rc)) {
+        static int said;
+        if (!said) { said = 1; fprintf(stderr, "[switch] threads stay on one core (0x%X)\n", rc); }
+    }
+}
 #endif
 
 int GetThreadPriority(HANDLE h)
@@ -852,6 +873,9 @@ static void *timer_thread(void *arg)
 {
     w32_object *o = (w32_object *)arg;
     int once = (o->timer_period == 0);
+#if defined(__SWITCH__)
+    xbox_switch_thread_core(2);
+#endif
 
     /* initial due time */
     if (o->timer_due) Sleep(o->timer_due);
@@ -927,6 +951,9 @@ struct w32_tp_args { PTP_SIMPLE_CALLBACK cb; PVOID ctx; };
 static void *w32_tp_trampoline(void *arg)
 {
     struct w32_tp_args *a = (struct w32_tp_args *)arg;
+#if defined(__SWITCH__)
+    xbox_switch_thread_core(2);
+#endif
     a->cb(NULL, a->ctx);
     free(a);
     return NULL;

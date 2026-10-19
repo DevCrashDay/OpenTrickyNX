@@ -13,6 +13,9 @@ OT_CPU_MHZ=1785
 OT_GPU_MHZ=768
 OT_MEM_MHZ=1600
 #OT_CLOCK_FORCE=1
+# 0: run every thread on CPU core 0, as before (the game, the renderer and
+# the rest otherwise each get a core of their own).
+#OT_CORES=0
 
 # ── Speed and troubleshooting ───────────────────────────────────────
 # 1: a timing summary in the log every 2 seconds (where the frame time goes).

@@ -718,7 +718,7 @@ int xa2_init(void)
     }
     g_nx_stop = 0;
     g_callbacks = 1;                    /* the thread starts at its priority */
-    if (R_FAILED(rc = threadCreate(&g_nx_thread, xa2_nx_thread, NULL, NULL, 0x8000, prio, -2)) ||
+    if (R_FAILED(rc = threadCreate(&g_nx_thread, xa2_nx_thread, NULL, NULL, 0x8000, prio, 2)) ||
         R_FAILED(rc = threadStart(&g_nx_thread))) {
         fprintf(stderr, "[XA2] audout thread failed (0x%X)\n", rc);
         audoutStopAudioOut();

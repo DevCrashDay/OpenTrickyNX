@@ -765,6 +765,7 @@ void ot_host_init(void)
         }
     }
     ot_switch_clocks();
+    xbox_switch_thread_core(0);         /* the game's thread */
     romfsInit();
 #endif
     ot_pad_init();
