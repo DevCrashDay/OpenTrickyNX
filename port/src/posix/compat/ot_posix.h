@@ -36,6 +36,9 @@ void ot_pad_init(void);
 /* The executable's folder, '/'-separated, without the trailing '/'. On the
  * Switch it is the folder of the .nro (sdmc:/switch/opentricky). */
 int  ot_exe_dir(char *out, size_t out_sz);
+/* The first disc image (*.iso) beside the executable, when settings.ini
+ * names none: on the Switch, the one copied into sdmc:/switch/opentricky. */
+int  ot_find_iso(char *out, size_t out_sz);
 /* The display's size in pixels (the desktop on Linux; 1920x1080 docked or
  * 1280x720 handheld on the Switch). */
 void ot_display_size(int *w, int *h);

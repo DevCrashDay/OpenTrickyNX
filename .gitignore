@@ -33,6 +33,11 @@ xboxrecomp_output/
 build/
 dist/
 build-launcher/
+build-switch/
+build-linux/
+*.nro
+*.nacp
+*.elf
 *.exe
 *.dll
 *.pdb

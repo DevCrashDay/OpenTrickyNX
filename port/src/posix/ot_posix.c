@@ -376,6 +376,23 @@ int ot_exe_dir(char *out, size_t out_sz)
     return snprintf(out, out_sz, "%s", exe[0] ? exe : "/") < (int)out_sz;
 }
 
+int ot_find_iso(char *out, size_t out_sz)
+{
+    char dir[1024];
+    DIR *d;
+    struct dirent *e;
+    int found = 0;
+    if (!ot_exe_dir(dir, sizeof dir) || !(d = opendir(dir))) return 0;
+    while (!found && (e = readdir(d)) != NULL) {
+        size_t n = strlen(e->d_name);
+        if (n > 4 && !strcasecmp(e->d_name + n - 4, ".iso"))
+            found = snprintf(out, out_sz, "%s%s%s", dir,
+                             dir[strlen(dir) - 1] == '/' ? "" : "/", e->d_name) < (int)out_sz;
+    }
+    closedir(d);
+    return found;
+}
+
 LPSTR GetCommandLineA(void)
 {
     static char line[4096];
@@ -607,6 +624,19 @@ UINT MapVirtualKeyW(UINT code, UINT type) { (void)code; (void)type; return 0; }
 void ot_host_init(void)
 {
 #ifdef __SWITCH__
+    /* Started from the album, homebrew gets a few hundred MB at most: not
+     * enough for the Xbox's memory plus the GPU's and the textures. */
+    {
+        AppletType t = appletGetAppletType();
+        if (t != AppletType_Application && t != AppletType_SystemApplication) {
+            ErrorApplicationConfig c;
+            if (R_SUCCEEDED(errorApplicationCreate(&c, "SSX Tricky needs more memory than the album gives.",
+                    "Start the Homebrew Menu over a game (hold R while starting any game), "
+                    "then start SSX Tricky from it.")))
+                errorApplicationShow(&c);
+            exit(1);
+        }
+    }
     romfsInit();
     /* Output to a PC when started with nxlink (nxlink -s). */
     if (__nxlink_host.s_addr) {

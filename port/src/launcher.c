@@ -649,7 +649,11 @@ void launcher_hdd_path(const LauncherConfig *cfg, char *out, size_t out_sz)
     } else {
         wcscpy(p, kind == LAUNCHER_SAVES_OLD_HDD ? L"hdd" : L"Saves");
     }
-    if ((p[0] && p[1] == L':') || (p[0] == L'\\' && p[1] == L'\\')) {
+    if ((p[0] && p[1] == L':') || (p[0] == L'\\' && p[1] == L'\\')
+#ifndef _WIN32
+        || p[0] == L'/' || wcschr(p, L':')          /* "/home/...", "sdmc:/..." */
+#endif
+        ) {
         wcscpy(joined, p);
     } else {
         WCHAR base[MAX_PATH];

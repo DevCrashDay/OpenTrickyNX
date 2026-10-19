@@ -265,8 +265,13 @@ static int open_launcher_instead(const char *why)
     }
     {
         char msg[768];
+#ifdef _WIN32
         snprintf(msg, sizeof msg, "%s\n\nChoose your SSX Tricky (USA) Xbox disc image in OpenTricky.exe, "
                  "the game's launcher.", why);
+#else
+        snprintf(msg, sizeof msg, "%s\n\nPut your SSX Tricky (USA) Xbox disc image (.iso) in the game's "
+                 "folder, or name it as DiscImage in settings.ini there.", why);
+#endif
         MessageBoxA(NULL, msg, "SSX Tricky", MB_ICONWARNING);
     }
     return 0;
@@ -846,6 +851,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             /* A relative DiscImage is relative to the install root, as in the
              * launcher: not to the working folder (bin\ on a double-click). */
             char why[512], iso[MAX_PATH];
+#ifndef _WIN32
+            /* No launcher here to choose one: the disc image beside the game. */
+            if (!launch_cfg.iso[0]) ot_find_iso(launch_cfg.iso, sizeof launch_cfg.iso);
+#endif
             launcher_resolve_path(launch_cfg.iso, iso, sizeof iso);
             /* Before the check: its folder is blanked in crash dumps, its
              * name hidden in the texts (the check's message too). */
