@@ -79,8 +79,15 @@ PYTHON="$PY" bash port/tools/fork_regen.sh
 
 echo "== [3/4] compiling for the Switch (10 to 20 minutes)"
 BUILD=port/build-switch
-CONFIGURE="cmake -S port -B $BUILD -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS_RELEASE='-O2 -DNDEBUG' \
-    -DCMAKE_C_FLAGS='-ffile-prefix-map=/src/='"
+# Only the Release flags are set here: CMAKE_C_FLAGS would replace the Switch
+# toolchain's own (-D__SWITCH__, the CPU, -fPIE).
+CONFIGURE="cmake -S port -B $BUILD -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_FLAGS_RELEASE='-O2 -DNDEBUG -ffile-prefix-map=/src/='"
+# A folder configured by an earlier version of this script, with the Switch
+# toolchain's flags replaced: start it again.
+if grep -q "^CMAKE_C_FLAGS:STRING=-ffile-prefix-map" "$BUILD/CMakeCache.txt" 2>/dev/null; then
+    rm -rf "$BUILD"
+fi
 if [ -n "${DEVKITPRO:-}" ]; then
     CMAKE="$DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake"
     [ -f "$BUILD/CMakeCache.txt" ] || eval "${CONFIGURE/cmake/$CMAKE}"
