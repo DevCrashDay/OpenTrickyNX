@@ -184,7 +184,10 @@ jobs:
           echo "$MESA_REPO $MESA_REV" > "$sdk/MESA_REVISION"
           mv /sdk/switch /sdk/portlibs-switch && mkdir -p /sdk/portlibs && mv /sdk/portlibs-switch /sdk/portlibs/switch
           # the Rust std has to be inside libvulkan.a
-          nm -s /sdk/portlibs/switch/lib/libvulkan.a > /tmp/libvulkan.nm 2>/dev/null || true
+          # Rebuild the archive index with the Switch toolchain's ranlib:
+          # the index the merge wrote here left out the Rust std members.
+          for a in /sdk/portlibs/switch/lib/*.a; do "$DEVKITA64/bin/aarch64-none-elf-ranlib" "$a"; done
+          "$DEVKITA64/bin/aarch64-none-elf-nm" -s /sdk/portlibs/switch/lib/libvulkan.a > /tmp/libvulkan.nm 2>/dev/null || true
           if ! grep -q '___rdl_alloc in std-' /tmp/libvulkan.nm; then
             echo "libvulkan.a has no Rust std"
             vk=/sdk/portlibs/switch/lib/libvulkan.a
@@ -192,7 +195,7 @@ jobs:
             ls -la "$vk" /mesa/builddir-switch/src/nouveau/vulkan/libvulkan.a || true
             echo "libvulkan.a members: $(ar t "$vk" | wc -l), std members: $(ar t "$vk" | grep -c '^std-' || true)"
             nm -s "$vk" > /dev/null 2> /tmp/nm.err; echo "nm exit $?"; head -5 /tmp/nm.err
-            grep -c 'rdl_alloc' /tmp/libvulkan.nm || true
+            grep 'rdl_alloc' /tmp/libvulkan.nm | head || true
             nak=/mesa/builddir-switch/src/nouveau/compiler/libnak_rs.a
             ls -la "$nak" || true
             echo "non-nak_rs members of libnak_rs.a:"; ar t "$nak" | grep -v '^nak_rs' | head -20 || true
