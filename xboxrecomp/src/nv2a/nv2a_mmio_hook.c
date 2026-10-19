@@ -467,3 +467,31 @@ bool nv2a_hook_handle_vram(uintptr_t fault_addr, uint32_t fault_xbox_va)
 { (void)fault_addr; (void)fault_xbox_va; return false; }
 
 #endif /* _WIN32 */
+
+/* Portable DAC palette page access (all platforms): the same routing
+ * decode_and_handle performs for the PRMDIO page, with the operand
+ * already decoded by the caller (e.g. a POSIX SIGSEGV handler). The
+ * palette handlers keep their own state, so a NULL NV2AState is fine. */
+bool nv2a_dac_mmio_access(uint32_t guest_va, unsigned size, int is_write,
+                          uint64_t *val)
+{
+    if (!val) return false;
+    if (guest_va < NV2A_MMIO_BASE + NV2A_PRMDIO_OFFSET ||
+        guest_va >= NV2A_MMIO_BASE + NV2A_PRMDIO_OFFSET + 0x1000u)
+        return false;
+    if (size != 1 && size != 2 && size != 4 && size != 8) return false;
+    uint32_t off = guest_va - NV2A_MMIO_BASE;
+    NV2AState *nv2a = nv2a_get_state();
+    if (is_write) {
+        uint64_t v = *val;
+        if (size < 8) v &= (1ULL << (size * 8)) - 1;
+        nv2a_mmio_write(nv2a, off, v, size);
+        g_mmio_write_count++;
+    } else {
+        uint64_t v = nv2a_mmio_read(nv2a, off, size);
+        if (size < 8) v &= (1ULL << (size * 8)) - 1;
+        *val = v;
+        g_mmio_read_count++;
+    }
+    return true;
+}

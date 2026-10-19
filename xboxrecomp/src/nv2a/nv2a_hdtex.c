@@ -7,7 +7,12 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "platform/xbox_winnt.h"
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -431,11 +436,19 @@ static DWORD WINAPI worker(LPVOID arg)
 
 static int start_workers(void)
 {
-    SYSTEM_INFO si;
     int i, n;
     const char *v = getenv("XBOX_HD_TEXTURES_THREADS");
+#ifdef _WIN32
+    SYSTEM_INFO si;
     GetSystemInfo(&si);
     n = v && atoi(v) > 0 ? atoi(v) : (int)si.dwNumberOfProcessors / 4;   /* the game and the pump keep theirs */
+#else
+    long ncpu = 4;
+#if defined(_SC_NPROCESSORS_ONLN) && !defined(__SWITCH__)
+    ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+    n = v && atoi(v) > 0 ? atoi(v) : (int)ncpu / 4;
+#endif
     if (n < 1) n = 1;
     if (n > 8) n = 8;
     InitializeCriticalSection(&g_qlock);

@@ -46,7 +46,11 @@
  * headless behaviour back.
  */
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "platform/xbox_winnt.h"
+#endif
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>

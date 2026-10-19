@@ -56,4 +56,12 @@ bool nv2a_hook_handle_vram(uintptr_t fault_addr, uint32_t fault_xbox_va);
 bool nv2a_dac_trap_install(uint8_t *mem_base);
 bool nv2a_dac_handle_mmio(PCONTEXT ctx, uint32_t fault_xbox_va, int is_write);
 
+/* Portable (all platforms): perform one access of `size` bytes (1/2/4/8) to
+ * the DAC palette page at guest VA `guest_va`, routed to the NV2A register
+ * handlers -- what nv2a_dac_handle_mmio does on Windows, minus the x86
+ * instruction decoding. For a write, *val holds the value; for a read, the
+ * result is stored in *val. Returns false if guest_va is outside the page. */
+bool nv2a_dac_mmio_access(uint32_t guest_va, unsigned size, int is_write,
+                          uint64_t *val);
+
 #endif /* BURNOUT3_NV2A_MMIO_HOOK_H */

@@ -8,8 +8,12 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #define COBJMACROS
+#ifdef _WIN32
 #include <windows.h>
 #include <wincodec.h>
+#else
+#include "platform/xbox_winnt.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -288,6 +292,7 @@ static uint64_t fnv64(const uint8_t *p, uint32_t n)
 }
 
 /* ── Drawings: PNG resources decoded by WIC to straight RGBA ───────────── */
+#ifdef _WIN32
 static int decode_png(const void *data, DWORD size, Img *out)
 {
     IWICImagingFactory *f = NULL;
@@ -332,6 +337,7 @@ done:
     if (uninit) CoUninitialize();
     return ok;
 }
+#endif /* _WIN32 */
 
 /* The replay help draws the D-pad disc and the two sticks on a dark
  * background, where the pack's near-black bodies vanish: their dark texels
@@ -349,6 +355,7 @@ static void lighten_body(Img *im)
     }
 }
 
+#ifdef _WIN32
 static int load_res(const char *name, Img *out)
 {
     HRSRC r = FindResourceA(NULL, name, MAKEINTRESOURCEA(10) /* RT_RCDATA */);
@@ -356,6 +363,15 @@ static int load_res(const char *name, Img *out)
     const void *p = g ? LockResource(g) : NULL;
     return p && decode_png(p, SizeofResource(NULL, r), out);
 }
+#else
+/* No executable resources (and no WIC) off Windows: the pictures are
+ * reported missing and the lesson keeps the title's own drawing. */
+static int load_res(const char *name, Img *out)
+{
+    (void)name; (void)out;
+    return 0;
+}
+#endif
 
 /* LB / RB (L1 / R1) shown wide in the race / trick HUD: their letters are
  * drawn at the triggers' cap height and stroke there (measured on the
@@ -466,7 +482,13 @@ static void load_icons(void)
 /* MODE_PS2: the lesson's pictures, loaded once by whichever thread asks first
  * (the pump thread composing the atlas, the game's thread setting the
  * shapes): both must agree, all of them or none. */
+#ifdef _WIN32
 static INIT_ONCE g_lesson_once = INIT_ONCE_STATIC_INIT;
+#else
+#include <pthread.h>
+typedef void *PINIT_ONCE;
+static pthread_once_t g_lesson_once = PTHREAD_ONCE_INIT;
+#endif
 static int g_lesson_ok;
 
 /* The lesson pad only (on: chosen on the in-game captures; XBOX_BUTTON_ICONS_PAD_SMOOTH=0
@@ -538,11 +560,19 @@ static BOOL CALLBACK lesson_load(PINIT_ONCE once, PVOID param, PVOID *ctx)
     return TRUE;
 }
 
+#ifndef _WIN32
+static void lesson_load_once(void) { lesson_load(NULL, NULL, NULL); }
+#endif
+
 /* The lesson's pad and markers of the button style, when it has them. */
 static int lesson_ready(void)
 {
     if (!btnicons_on() || (g_mode != MODE_PS2 && g_mode != MODE_PS && g_mode != MODE_MODERN)) return 0;
+#ifdef _WIN32
     InitOnceExecuteOnce(&g_lesson_once, lesson_load, NULL, NULL);
+#else
+    pthread_once(&g_lesson_once, lesson_load_once);
+#endif
     return g_lesson_ok;
 }
 
@@ -1065,7 +1095,11 @@ int btnicons_cfg_style(void)
 {
     const char *r;
     if (!btnicons_on() || !(r = cfg_res())) return 0;
+#ifdef _WIN32
     if (!FindResourceA(NULL, r, MAKEINTRESOURCEA(10))) return 0;
+#else
+    return 0;                       /* no resources off Windows */
+#endif
     return g_mode == MODE_PS2 ? 1 : g_mode == MODE_PS ? 2 : 3;
 }
 
