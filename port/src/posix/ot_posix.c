@@ -639,16 +639,42 @@ static void on_abort(int sig)
 #endif
 
 #ifdef __SWITCH__
-static void on_exit_log(void) { printf("[SSX Tricky] exit\n"); fsync(fileno(stdout)); }
+#include <fcntl.h>
+#include <sys/iosupport.h>
 
-/* The SD card's file only grows on the card when its data is committed: a
- * program that crashes leaves a log cut short. Committed four times a second. */
+/* The log: stdout and stderr both write here. A file on the SD card only
+ * grows on the card when its data is committed, and a program the system
+ * stops leaves nothing it has not committed: the first lines (the start, where
+ * a port fails first) are committed one by one, the rest four times a second. */
+static int s_log_fd = -1;
+static volatile unsigned s_log_writes;
+#define LOG_SYNC_EACH 4000
+
+static ssize_t log_write_r(struct _reent *r, void *fd, const char *ptr, size_t len)
+{
+    ssize_t n;
+    (void)r; (void)fd;
+    n = write(s_log_fd, ptr, len);
+    if (s_log_writes++ < LOG_SYNC_EACH) fsync(s_log_fd);
+    return n < 0 ? 0 : n;
+}
+
+static int log_fsync_r(struct _reent *r, void *fd)
+{
+    (void)r; (void)fd;
+    return s_log_fd >= 0 ? fsync(s_log_fd) : 0;
+}
+
+static const devoptab_t s_log_dev = { .name = "log", .write_r = log_write_r, .fsync_r = log_fsync_r };
+
+static void on_exit_log(void) { printf("[SSX Tricky] exit\n"); if (s_log_fd >= 0) fsync(s_log_fd); }
+
 static void *log_sync_thread(void *arg)
 {
     (void)arg;
     for (;;) {
         svcSleepThread(250000000LL);
-        fsync(fileno(stdout));
+        if (s_log_fd >= 0) fsync(s_log_fd);
     }
     return NULL;
 }
@@ -669,12 +695,13 @@ void ot_host_init(void)
         char dir[1024], path[1100];
         if (ot_exe_dir(dir, sizeof dir)) {
             snprintf(path, sizeof path, "%s%sSSX Tricky.log", dir, dir[strlen(dir) - 1] == '/' ? "" : "/");
-            /* Emptied, then both streams opened to append: with one of them
-             * at its own position, its writes covered the other's lines. */
-            FILE *t = fopen(path, "w");
-            if (t) fclose(t);
-            if (freopen(path, "a", stdout)) setvbuf(stdout, NULL, _IONBF, 0);
-            if (freopen(path, "a", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+            s_log_fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
+            if (s_log_fd >= 0) {
+                devoptab_list[STD_OUT] = &s_log_dev;
+                devoptab_list[STD_ERR] = &s_log_dev;
+                setvbuf(stdout, NULL, _IONBF, 0);
+                setvbuf(stderr, NULL, _IONBF, 0);
+            }
         }
     }
     printf("SSX Tricky (OpenTrickyNX) starting: %s\n", s_argc > 0 ? s_argv[0] : "?");

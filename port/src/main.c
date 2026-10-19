@@ -933,8 +933,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
     /* The log file, if the player asked for one: everything the game reports
      * goes to "<exe name>.log" beside settings.ini, replacing the previous run's. The
-     * executable has no console, so without this a crash leaves nothing. */
+     * executable has no console, so without this a crash leaves nothing.
+     * The Switch build always logs, from its first line (ot_host_init). */
+#if defined(__SWITCH__)
+    if (0) {
+#else
     if (use_config && launch_cfg.log_file) {
+#endif
         FILE *t;
         launcher_log_path(s_log_path, sizeof s_log_path);
         t = fopen(s_log_path, "w");

@@ -14,16 +14,32 @@
  * an ordinary crash. libnx's crash dump (__libnx_exception_handler) is not
  * used by this program.
  */
+#define HOST_FAULT_NX_STACK_SIZE 0x10000
+
     .section .text.__libnx_exception_entry, "ax", %progbits
     .global __libnx_exception_entry
     .type   __libnx_exception_entry, %function
     .align  2
 __libnx_exception_entry:
-    cbz     x1, 2f
+    cbz     x1, 3f
 
-    /* 21 GPRs (x9-x29) + x0/x1 + fpcr/fpsr = 25 slots -> 26 for alignment,
+    /* The kernel's stack here is a few hundred bytes in the process's local
+     * region: far too small for the decoder, the device callbacks or a crash
+     * report, and overrunning it ends the program without a trace. Switch to
+     * our own (one is enough: the kernel lets one thread at a time into the
+     * exception handler), keeping the kernel's sp and x9/x10 on it. */
+    stp     x9,  x10, [sp, #-16]!
+    mov     x10, sp
+    adrp    x9, host_fault_nx_stack
+    add     x9, x9, :lo12:host_fault_nx_stack
+    add     x9, x9, #(HOST_FAULT_NX_STACK_SIZE >> 12), lsl #12
+    mov     sp, x9
+
+    /* 21 GPRs (x9-x29) + x0/x1 + fpcr/fpsr + the kernel's sp = 26 slots,
      * then 32 Q registers. */
     sub     sp, sp, #(26 * 8 + 32 * 16)
+    str     x10,      [sp, #200]
+    ldp     x9,  x10, [x10]
     stp     x9,  x10, [sp, #0]
     stp     x11, x12, [sp, #16]
     stp     x13, x14, [sp, #32]
@@ -81,9 +97,18 @@ __libnx_exception_entry:
     ldp     x9,  x10, [sp, #184]
     msr     fpcr, x9
     msr     fpsr, x10
-    cbz     w11, 1f
+    /* Result for svcReturnFromException: 0 resumes, 0xF801 = not handled
+     * (the kernel then treats it as an ordinary crash). */
+    mov     w1, #0xF801
+    cmp     w11, #0
+    csel    w0, w1, wzr, eq
+    str     x0,       [sp, #168]
 
-    ldp     x9,  x10, [sp, #0]
+    /* Back on the kernel's stack: x9/x10 (which the dispatcher may have
+     * written) go there, the rest straight into the registers. */
+    ldr     x9,       [sp, #200]
+    ldp     x10, x11, [sp, #0]
+    stp     x10, x11, [x9]
     ldp     x11, x12, [sp, #16]
     ldp     x13, x14, [sp, #32]
     ldp     x15, x16, [sp, #48]
@@ -94,23 +119,16 @@ __libnx_exception_entry:
     ldp     x25, x26, [sp, #128]
     ldp     x27, x28, [sp, #144]
     ldr     x29,      [sp, #160]
-    add     sp, sp, #(26 * 8 + 32 * 16)
-    mov     w0, #0
+    ldr     x0,       [sp, #168]
+    mov     sp, x9
+    ldp     x9,  x10, [sp], #16
     b       svcReturnFromException
 
-1:  /* not ours: restore and report it unhandled */
-    ldp     x9,  x10, [sp, #0]
-    ldp     x11, x12, [sp, #16]
-    ldp     x13, x14, [sp, #32]
-    ldp     x15, x16, [sp, #48]
-    ldp     x17, x18, [sp, #64]
-    ldp     x19, x20, [sp, #80]
-    ldp     x21, x22, [sp, #96]
-    ldp     x23, x24, [sp, #112]
-    ldp     x25, x26, [sp, #128]
-    ldp     x27, x28, [sp, #144]
-    ldr     x29,      [sp, #160]
-    add     sp, sp, #(26 * 8 + 32 * 16)
-2:  mov     w0, #0xF801
+3:  mov     w0, #0xF801
     b       svcReturnFromException
     .size   __libnx_exception_entry, . - __libnx_exception_entry
+
+    .section .bss.host_fault_nx_stack, "aw", %nobits
+    .align  4
+host_fault_nx_stack:
+    .space  HOST_FAULT_NX_STACK_SIZE
