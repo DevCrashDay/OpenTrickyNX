@@ -1221,6 +1221,140 @@ static void swapchain_destroy_views(void)
     }
 }
 
+#if defined(__SWITCH__)
+/* XBOX_VK_PRESENT=fb: frames reach the screen through libnx's own
+ * framebuffer instead of NVK's swapchain. Each frame is rendered into an
+ * image of ours, copied to host memory and handed to the NWindow by the
+ * CPU, one frame behind (the copy of frame N runs while N+1 is recorded).
+ * Slower, but it does not depend on the driver's scanout path. */
+static int         s_fbmode = -1;
+static Framebuffer s_fb;
+static VkdImage    s_fb_img[2];
+static VkBuffer    s_fb_buf[2];
+static VkdMem      s_fb_mem[2];
+static uint64_t    s_fb_serial[2];
+static int         s_fb_ready;
+
+static int fb_mode(void)
+{
+    if (s_fbmode < 0) {
+        const char *e = getenv("XBOX_VK_PRESENT");
+        s_fbmode = e && !strcmp(e, "fb");
+    }
+    return s_fbmode;
+}
+
+static int fb_build(void)
+{
+    u32 w = 1280, h = 720;
+    int i;
+    if (s_fb_ready) { s_sc_sync = s_sync; s_sc_stale = 0; return 1; }
+    nwindowGetDimensions(nwindowGetDefault(), &w, &h);
+    g_vk.sc_format = VK_FORMAT_R8G8B8A8_UNORM;
+    s_sc_ext.width = w;
+    s_sc_ext.height = h;
+    for (i = 0; i < 2; i++) {
+        if (!vkd_image_create(&s_fb_img[i], w, h, 1, VK_FORMAT_R8G8B8A8_UNORM,
+                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SAMPLE_COUNT_1_BIT, NULL) ||
+            !buffer_create((VkDeviceSize)w * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                           &s_fb_buf[i], &s_fb_mem[i]) || !s_fb_mem[i].map) {
+            fprintf(stderr, "D3D8: fb present: no frame image\n");
+            return 0;
+        }
+        s_sc_img[i] = s_fb_img[i].image;
+        s_sc_view[i] = s_fb_img[i].view;
+    }
+    if (R_FAILED(framebufferCreate(&s_fb, nwindowGetDefault(), w, h, PIXEL_FORMAT_RGBA_8888, 2)) ||
+        R_FAILED(framebufferMakeLinear(&s_fb))) {
+        fprintf(stderr, "D3D8: fb present: framebufferCreate failed\n");
+        return 0;
+    }
+    s_sc_n = 2;
+    s_sc_idx = 0;
+    s_fb_ready = 1;
+    s_sc_sync = s_sync;
+    s_sc_stale = 0;
+    fprintf(stderr, "D3D8: Vulkan frames shown through the libnx framebuffer, %ux%u\n", w, h);
+    fflush(stderr);
+    return 1;
+}
+
+/* The frame copied out of slot i: to the screen (waits for the GPU). */
+static void fb_show(int i)
+{
+    static unsigned shown;
+    VkMappedMemoryRange mr = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
+    const uint32_t *src;
+    uint8_t *dst;
+    u32 stride, y, x, w = s_sc_ext.width, h = s_sc_ext.height;
+    if (!s_fb_serial[i]) return;
+    wait_serial(s_fb_serial[i]);
+    s_fb_serial[i] = 0;
+    mr.memory = s_fb_mem[i].mem;
+    mr.offset = 0;
+    mr.size = VK_WHOLE_SIZE;
+    vkInvalidateMappedMemoryRanges(g_vk.dev, 1, &mr);
+    src = (const uint32_t *)s_fb_mem[i].map;
+    if (shown < 3 || shown % 600 == 0) {
+        fprintf(stderr, "D3D8: fb present frame %u: left 0x%08X centre 0x%08X right 0x%08X\n", shown,
+                src[(h / 2) * w + w / 4], src[(h / 2) * w + w / 2], src[(h / 2) * w + w * 3 / 4]);
+        fflush(stderr);
+    }
+    shown++;
+    dst = (uint8_t *)framebufferBegin(&s_fb, &stride);
+    for (y = 0; y < h; y++) {
+        uint32_t *d = (uint32_t *)(dst + (size_t)y * stride);
+        const uint32_t *s = src + (size_t)y * w;
+        for (x = 0; x < w; x++) d[x] = s[x] | 0xFF000000u;     /* opaque */
+    }
+    framebufferEnd(&s_fb);
+}
+
+static void fb_present_end(void)
+{
+    VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    VkBufferMemoryBarrier bb = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+    VkBufferImageCopy c = { 0 };
+    int i = (int)s_sc_idx;
+    vkCmdEndRendering(s_main);
+    s_rendering = 0;
+    b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = s_sc_img[i];
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.levelCount = 1;
+    b.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(s_main, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    c.imageSubresource.layerCount = 1;
+    c.imageExtent.width = s_sc_ext.width;
+    c.imageExtent.height = s_sc_ext.height;
+    c.imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(s_main, s_sc_img[i], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_fb_buf[i], 1, &c);
+    bb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    bb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    bb.srcQueueFamilyIndex = bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bb.buffer = s_fb_buf[i];
+    bb.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(s_main, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                         0, 0, NULL, 1, &bb, 0, NULL);
+    submit(VK_NULL_HANDLE, VK_NULL_HANDLE);
+    s_fb_serial[i] = s_submitted;
+    s_sc_idx ^= 1;
+    fb_show((int)s_sc_idx);             /* the previous frame */
+}
+#else
+static int fb_mode(void) { return 0; }
+static int fb_build(void) { return 0; }
+static void fb_present_end(void) { }
+#endif
+
 static int swapchain_build(void)
 {
     VkSurfaceCapabilitiesKHR caps;
@@ -1232,6 +1366,7 @@ static int swapchain_build(void)
     VkResult r;
     int dw = 0, dh = 0;
 
+    if (fb_mode()) return fb_build();
     vkDeviceWaitIdle(g_vk.dev);
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, s_surf, &caps);
     vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, s_surf, &nm, modes);
@@ -1326,6 +1461,10 @@ int vkd_present_begin(uint32_t *w, uint32_t *h)
     vkd_cmd_outside();
     if (s_sc_sync != s_sync) s_sc_stale = 1;
     for (tries = 0; tries < 2; tries++) {
+        if (fb_mode()) {
+            if ((s_sc_stale || !s_sc_n) && !swapchain_build()) return 0;
+            break;
+        }
         if ((s_sc_stale || !s_sc) && !swapchain_build()) return 0;
         r = vkAcquireNextImageKHR(g_vk.dev, s_sc, UINT64_MAX, s_fr[s_cur].acquire, VK_NULL_HANDLE, &s_sc_idx);
         if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) break;
@@ -1382,6 +1521,14 @@ void vkd_present_end(void)
             VkClearRect cr = { { { 0, 0 }, { s_sc_ext.width / 2, s_sc_ext.height } }, 0, 1 };
             vkCmdClearAttachments(s_main, 1, &a, 1, &cr);
         }
+    }
+    if (fb_mode()) {
+        fb_present_end();
+        s_acquired = 0;
+        s_frame_no++;
+        s_cur = -1;
+        pcache_save(0);
+        return;
     }
     vkCmdEndRendering(s_main);
     s_rendering = 0;
@@ -1471,6 +1618,7 @@ static int surface_create(void)
 #if defined(__SWITCH__)
     VkViSurfaceCreateInfoNN si = { VK_STRUCTURE_TYPE_VI_SURFACE_CREATE_INFO_NN };
     VkResult r;
+    if (fb_mode()) return 1;            /* no surface: the libnx framebuffer */
     si.window = nwindowGetDefault();
     r = vkCreateViSurfaceNN(g_vk.inst, &si, NULL, &s_surf);
     if (r != VK_SUCCESS) { vk_fail("vkCreateViSurfaceNN", r); return 0; }
@@ -1531,7 +1679,8 @@ static int device_create(void)
         vkGetPhysicalDeviceQueueFamilyProperties(devs[i], &nq, qp);
         for (q = 0; q < nq; q++) {
             VkBool32 pres = VK_FALSE;
-            vkGetPhysicalDeviceSurfaceSupportKHR(devs[i], q, s_surf, &pres);
+            if (s_surf) vkGetPhysicalDeviceSurfaceSupportKHR(devs[i], q, s_surf, &pres);
+            else pres = VK_TRUE;
             if ((qp[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) && pres) break;
         }
         if (q == nq) continue;
@@ -1690,4 +1839,7 @@ void vkd_core_shutdown(void)
     vkDeviceWaitIdle(g_vk.dev);
     pcache_save(1);
     vkd_pipelines_drop();
+#if defined(__SWITCH__)
+    if (s_fb_ready) { framebufferClose(&s_fb); s_fb_ready = 0; }
+#endif
 }
