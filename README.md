@@ -95,7 +95,7 @@ The script reads `default.xbe` from your disc image, translates it to C, applies
 3. Hold **R** while starting any installed game to open the Homebrew Menu **over a game**, then start *SSX Tricky (OpenTricky)*.
    Started from the album, homebrew doesn't get enough memory: the game says so and stops.
 
-Settings live in `sdmc:/switch/opentricky/settings.ini` (written on the first start), saves in `sdmc:/switch/opentricky/Saves/`.
+Settings live in `sdmc:/switch/opentricky/settings.ini` (optional: create it to change a setting, only the lines you change are needed), saves in `sdmc:/switch/opentricky/Saves/`.
 
 ## Controls and settings
 

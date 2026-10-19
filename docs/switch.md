@@ -60,7 +60,7 @@ All in `sdmc:/switch/opentricky/`:
 |---|---|
 | `SSX Tricky.nro` | The game. |
 | `*.iso` | Your disc image. The game reads it in place; nothing is extracted. |
-| `settings.ini` | The settings, the same file as on Windows (written on first start). Edit it on a computer. |
+| `settings.ini` | Optional: the settings, the same file as on Windows. Not created by the game; write only the lines you change, under their section, e.g. `[Advanced]` then `LogFile=1`. |
 | `Saves/` | Saved games (the Xbox hard disk's save area). |
 
 ## Controls
