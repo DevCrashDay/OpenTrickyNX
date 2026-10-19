@@ -34,6 +34,7 @@ env:
   DEVKITA64: /opt/devkitpro/devkitA64
   MESA_SWITCH_RUST_TARGET: aarch64-unknown-linux-gnu
   SPIRV_TAG: vulkan-sdk-1.3.290.0
+  RUST_VERSION: 1.99.1
   SPIRV_PREFIX: /opt/spirv-tools
   CARGO_HOME: /root/.cargo
   RUSTUP_HOME: /root/.rustup
@@ -53,7 +54,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /sdk
-          key: mesa-switch-nvk-${{ env.MESA_REV }}-full-v2
+          key: mesa-switch-nvk-${{ env.MESA_REV }}-full-v3
 
       - name: Host packages
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -93,12 +94,14 @@ jobs:
           cmake --build /tmp/SPIRV-Tools/build
           cmake --install /tmp/SPIRV-Tools/build
 
-      - name: Rust nightly, bindgen, cbindgen (NAK)
+      # Stable, pinned: with nightly, the Rust std objects bundled into
+      # libvulkan.a didn't match what nak_rs referenced, and the .nro link
+      # failed on core::panicking and __rdl_alloc.
+      - name: Rust, bindgen, cbindgen (NAK)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly --profile minimal
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$RUST_VERSION" --profile minimal
           . "$CARGO_HOME/env"
-          rustup component add rust-src
           rustup target add "$MESA_SWITCH_RUST_TARGET"
           cargo install bindgen-cli cbindgen
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
