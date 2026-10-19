@@ -12,17 +12,28 @@ your disc image, and the result contains code translated from your copy, so keep
 
 | | |
 |---|---|
-| **A computer** | Linux, WSL or macOS, with Python 3 and Docker. |
-| **Python packages** | `python3 -m pip install capstone numpy pillow` |
+| **A computer** | Windows, Linux or macOS, with Python 3 and Docker (Docker Desktop on Windows and macOS, started before the build). |
+| **On Windows** | MSYS2 with the packages of the Windows build ([building.md](building.md#what-you-need)): they include Python with capstone, numpy and pillow. |
+| **Python packages** (Linux, macOS) | `python3 -m pip install capstone numpy pillow` |
 | **The Switch toolchain** | Nothing to install: the build uses devkitPro's `devkitpro/devkita64` Docker image (devkitA64, libnx, SDL2, Mesa). With devkitPro installed, set `DEVKITPRO=/opt/devkitpro` and Docker is not needed. |
 | **The game** | A disc image of your own **SSX Tricky (USA) Xbox** disc (`.iso`, an extract-xiso image or a full dump). |
 | **The console** | A Switch running custom firmware with the Homebrew Menu (hbmenu). |
 
 ## Build
 
+On Windows (or drag the `.iso` onto `build_switch.bat`):
+
+```bat
+build_switch.bat "C:\path\to\SSX Tricky (USA).iso"
+```
+
+On Linux or macOS (or from an MSYS2 UCRT64 shell on Windows):
+
 ```bash
 ./build_switch.sh "path/to/SSX Tricky (USA).iso"
 ```
+
+The first build downloads the `devkitpro/devkita64` image (about 3 GB).
 
 1. **Reads your disc image**: `default.xbe` into `game_files/` (git-ignored), as for Windows.
 2. **Translates the game** with `port/tools/fork_regen.sh`, into `port/src/recomp/gen/` (git-ignored).

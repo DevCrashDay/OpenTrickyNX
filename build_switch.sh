@@ -5,8 +5,9 @@
 #
 #   ./build_switch.sh "path/to/SSX Tricky (USA).iso"
 #
-# Runs on Linux (or WSL, or macOS) with Python 3 (capstone, numpy, pillow) and
-# Docker; the Switch toolchain (devkitPro's devkitA64, libnx, SDL2 and Mesa) is
+# Runs on Linux, macOS or Windows (build_switch.bat, through MSYS2 as for the
+# Windows build) with Python 3 (capstone, numpy, pillow) and Docker (Docker
+# Desktop on Windows and macOS); the Switch toolchain (devkitPro's devkitA64, libnx, SDL2 and Mesa) is
 # the devkitpro/devkita64 image, pulled on first use. Set DEVKITPRO instead to
 # use an installed devkitPro and skip Docker.
 #
@@ -22,7 +23,15 @@ if [ -z "$ISO" ] && [ ! -f game_files/default.xbe ]; then
     echo "usage: ./build_switch.sh \"path/to/SSX Tricky (USA).iso\""
     exit 2
 fi
-PY="${PYTHON:-python3}"
+PY="${PYTHON:-}"
+if [ -z "$PY" ]; then
+    PY=python3
+    command -v python3 >/dev/null 2>&1 || PY=python
+fi
+# On Windows (MSYS2): Docker wants a Windows path for the mounted folder, and
+# MSYS2 must leave the container's own paths (/src, /opt/...) alone.
+ON_WINDOWS=0
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) ON_WINDOWS=1 ;; esac
 
 echo "== [0/4] checking the tools"
 "$PY" -c "import capstone, numpy, PIL" 2>/dev/null || {
@@ -54,7 +63,14 @@ if [ -n "${DEVKITPRO:-}" ]; then
     [ -f "$BUILD/CMakeCache.txt" ] || eval "${CONFIGURE/cmake/$CMAKE}"
     cmake --build "$BUILD" -j "$(nproc 2>/dev/null || echo 4)"
 else
-    docker run --rm -u "$(id -u):$(id -g)" -v "$ROOT:/src" -w /src devkitpro/devkita64 bash -c "
+    if [ "$ON_WINDOWS" = 1 ]; then
+        MOUNT="$(cygpath -m "$ROOT")"; USER_ARGS=()
+        export MSYS2_ARG_CONV_EXCL='*'
+    else
+        MOUNT="$ROOT"; USER_ARGS=(-u "$(id -u):$(id -g)")
+    fi
+    docker info >/dev/null 2>&1 || { echo "Docker is not running: start Docker (Docker Desktop on Windows) and try again."; exit 1; }
+    docker run --rm "${USER_ARGS[@]}" -v "$MOUNT:/src" -w /src devkitpro/devkita64 bash -c "
         set -e
         [ -f $BUILD/CMakeCache.txt ] || ${CONFIGURE/cmake//opt/devkitpro/portlibs/switch/bin/aarch64-none-elf-cmake}
         cmake --build $BUILD -j \$(nproc)"
