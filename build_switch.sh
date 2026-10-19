@@ -139,6 +139,13 @@ CONFIGURE="cmake -S port -B $BUILD -DCMAKE_BUILD_TYPE=Release \
 if grep -q "^CMAKE_C_FLAGS:STRING=-ffile-prefix-map" "$BUILD/CMakeCache.txt" 2>/dev/null; then
     rm -rf "$BUILD"
 fi
+# The Docker build needs a folder configured in Docker (at /src): CMake
+# refuses one configured anywhere else, so start it again.
+if [ -z "${DEVKITPRO:-}" ] && [ -f "$BUILD/CMakeCache.txt" ] &&
+   ! grep -qxF "CMAKE_CACHEFILE_DIR:INTERNAL=/src/$BUILD" "$BUILD/CMakeCache.txt"; then
+    echo "   $BUILD was configured elsewhere: configuring it again"
+    rm -rf "$BUILD"
+fi
 if [ -n "${DEVKITPRO:-}" ]; then
     CMAKE="$DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake"
     [ -f "$BUILD/CMakeCache.txt" ] || eval "${CONFIGURE/cmake/$CMAKE}"
