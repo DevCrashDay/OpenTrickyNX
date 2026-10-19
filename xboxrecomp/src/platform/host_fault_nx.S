@@ -129,6 +129,7 @@ __libnx_exception_entry:
     .size   __libnx_exception_entry, . - __libnx_exception_entry
 
     .section .bss.host_fault_nx_stack, "aw", %nobits
+    .global host_fault_nx_stack
     .align  4
 host_fault_nx_stack:
     .space  HOST_FAULT_NX_STACK_SIZE

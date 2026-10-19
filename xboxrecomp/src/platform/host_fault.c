@@ -460,7 +460,12 @@ int host_fault_nx_dispatch(uint32_t desc, ThreadExceptionFrameA64 *frame, uint64
     return 1;
 }
 
-static bool host_fault_install(void) { return true; }   /* the entry is linked in */
+/* host_fault_nx.S is linked only if something refers to it: libnx's own
+ * (weak) __libnx_exception_entry would otherwise be the one that runs, and it
+ * ends the program at the first trapped access. */
+extern char host_fault_nx_stack[];
+__attribute__((used)) static char *const s_link_nx_entry = host_fault_nx_stack;
+static bool host_fault_install(void) { return true; }
 
 #endif /* __SWITCH__ */
 
