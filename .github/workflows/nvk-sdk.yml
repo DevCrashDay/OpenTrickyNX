@@ -184,8 +184,8 @@ jobs:
           echo "$MESA_REPO $MESA_REV" > "$sdk/MESA_REVISION"
           mv /sdk/switch /sdk/portlibs-switch && mkdir -p /sdk/portlibs && mv /sdk/portlibs-switch /sdk/portlibs/switch
           # the Rust std has to be inside libvulkan.a
-          index="$(nm -s /sdk/portlibs/switch/lib/libvulkan.a 2>/dev/null || true)"
-          grep -q '___rdl_alloc in std-' <<<"$index" || { echo "libvulkan.a has no Rust std"; exit 1; }
+          nm -s /sdk/portlibs/switch/lib/libvulkan.a > /tmp/libvulkan.nm 2>/dev/null || true
+          grep -q '___rdl_alloc in std-' /tmp/libvulkan.nm || { echo "libvulkan.a has no Rust std"; exit 1; }
           for f in lib/libvulkan.a lib/libEGL.a lib/libglapi.a include/vulkan/vulkan.h include/vulkan/vulkan_vi.h lib/cmake/Vulkan/VulkanConfig.cmake; do
             test -f "/sdk/portlibs/switch/$f" || { echo "SDK is missing $f"; exit 1; }
           done
