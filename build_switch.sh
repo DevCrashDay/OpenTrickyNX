@@ -14,7 +14,8 @@
 # VULKAN=1 builds the Vulkan renderer (NVK, as flatout2-sw / fo2x) instead of
 # OpenGL, in port/build-switch-vk/. It needs two install prefixes:
 #   NVK_SDK      mesa-switch built with NVK (include/vulkan, lib/libvulkan_nouveau.a)
-#   GLSLANG_DIR  glslang built for the Switch (port/tools/build_glslang_switch.sh)
+#   GLSLANG_DIR  glslang built for the Switch (port/tools/build_glslang_switch.sh;
+#                built into build/glslang-switch on first use when not set)
 #
 # Result: dist/switch/opentricky/"SSX Tricky.nro". Copy that folder to
 # sdmc:/switch/ with your disc image in it -- see docs/switch.md. The build
@@ -73,9 +74,16 @@ fi
 
 VULKAN="${VULKAN:-0}"
 if [ "$VULKAN" = 1 ]; then
-    for v in NVK_SDK GLSLANG_DIR; do
-        [ -n "${!v:-}" ] && [ -d "${!v}" ] || { echo "VULKAN=1 needs $v (an install prefix), see the top of this script."; exit 1; }
-    done
+    # C:\... from a Command Prompt (build_switch.bat): as an MSYS2 path
+    if [ "$ON_WINDOWS" = 1 ]; then
+        [ -z "${NVK_SDK:-}" ] || NVK_SDK="$(cygpath -u "$NVK_SDK")"
+        [ -z "${GLSLANG_DIR:-}" ] || GLSLANG_DIR="$(cygpath -u "$GLSLANG_DIR")"
+    fi
+    [ -n "${NVK_SDK:-}" ] && [ -d "$NVK_SDK" ] || { echo "VULKAN=1 needs NVK_SDK (an install prefix), see the top of this script."; exit 1; }
+    if [ -z "${GLSLANG_DIR:-}" ]; then
+        GLSLANG_DIR="$ROOT/build/glslang-switch"
+        [ -f "$GLSLANG_DIR/lib/libglslang.a" ] || bash port/tools/build_glslang_switch.sh build/glslang-switch
+    fi
     [ -f "$NVK_SDK/lib/libvulkan_nouveau.a" ] || { echo "No lib/libvulkan_nouveau.a in NVK_SDK=$NVK_SDK"; exit 1; }
     [ -f "$GLSLANG_DIR/lib/libglslang.a" ] || { echo "No lib/libglslang.a in GLSLANG_DIR=$GLSLANG_DIR (port/tools/build_glslang_switch.sh builds it)"; exit 1; }
 fi

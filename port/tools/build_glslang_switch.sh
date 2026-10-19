@@ -8,7 +8,9 @@
 #
 # Static libraries only, without the SPIR-V optimiser (the driver optimises).
 # Uses an installed devkitPro (DEVKITPRO=...) or the devkitpro/devkita64
-# Docker image, as build_switch.sh does. Needs git.
+# Docker image, as build_switch.sh does (on Windows from MSYS2, which
+# build_switch.bat opens; build_switch.sh VULKAN=1 runs this itself when
+# GLSLANG_DIR is not set). Needs git.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
@@ -16,6 +18,7 @@ PREFIX="${1:-build/glslang-switch}"
 TAG="${GLSLANG_TAG:-15.1.0}"
 SRC=build/glslang-src
 mkdir -p build
+command -v git >/dev/null 2>&1 || { echo "git is missing (MSYS2: pacman -S --needed git)"; exit 1; }
 [ -d "$SRC/.git" ] || git clone --depth 1 --branch "$TAG" https://github.com/KhronosGroup/glslang.git "$SRC"
 mkdir -p "$PREFIX"
 PREFIX="$(cd "$PREFIX" && pwd)"
@@ -30,7 +33,13 @@ if [ -n "${DEVKITPRO:-}" ]; then
     cmake --install build/glslang-build
 else
     case "$REL_PREFIX" in /*) echo "With Docker the prefix must be inside $ROOT"; exit 1 ;; esac
-    docker run --rm -u "$(id -u):$(id -g)" -v "$ROOT:/src" -w /src devkitpro/devkita64 bash -c "
+    case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)   # Docker wants a Windows path; MSYS2 must leave /src alone
+        MOUNT="$(cygpath -m "$ROOT")"; USER_ARGS=()
+        export MSYS2_ARG_CONV_EXCL='*' ;;
+    *)  MOUNT="$ROOT"; USER_ARGS=(-u "$(id -u):$(id -g)") ;;
+    esac
+    docker run --rm ${USER_ARGS[@]+"${USER_ARGS[@]}"} -v "$MOUNT:/src" -w /src devkitpro/devkita64 bash -c "
         set -e
         /opt/devkitpro/portlibs/switch/bin/aarch64-none-elf-cmake -S $SRC -B build/glslang-build $OPTS -DCMAKE_INSTALL_PREFIX=/src/$REL_PREFIX
         cmake --build build/glslang-build -j \$(nproc)

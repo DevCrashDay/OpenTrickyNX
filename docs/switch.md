@@ -99,12 +99,19 @@ A Vulkan renderer, through the community's Mesa NVK builds for the Switch as fla
 instead. It is new and not yet tried on a console, so OpenGL stays the default:
 
 ```bash
-port/tools/build_glslang_switch.sh                  # once: glslang for the Switch, in build/glslang-switch
-VULKAN=1 NVK_SDK=/path/to/mesa-switch/usr/local GLSLANG_DIR=build/glslang-switch \
-    ./build_switch.sh "path/to/SSX Tricky (USA).iso"
+VULKAN=1 NVK_SDK=/path/to/mesa-switch/usr/local ./build_switch.sh "path/to/SSX Tricky (USA).iso"
 ```
 
-`NVK_SDK` is an install of mesa-switch built with NVK (`include/vulkan/`, `lib/libvulkan_nouveau.a`). The build goes
+On Windows, in a Command Prompt in the OpenTricky folder:
+
+```bat
+set VULKAN=1
+set NVK_SDK=C:\path\to\mesa-switch\usr\local
+build_switch.bat "C:\path\to\SSX Tricky (USA).iso"
+```
+
+The first Vulkan build also compiles glslang for the Switch into `build/glslang-switch/` (or set `GLSLANG_DIR` to
+one you built). `NVK_SDK` is an install of mesa-switch built with NVK (`include/vulkan/`, `lib/libvulkan_nouveau.a`). The build goes
 to `port/build-switch-vk/`. Shaders are compiled on the console the first time they are needed; the driver keeps
 the compiled pipelines in `vk_pipeline.cache` beside the `.nro`, so the first race of each kind stutters and later
 ones do not. SMAA, soft shadows and the post chain are not in the Vulkan renderer.
