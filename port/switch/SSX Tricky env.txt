@@ -25,6 +25,10 @@ OT_MEM_MHZ=1600
 #XBOX_GL_PERSIST=1
 # 1: report OpenGL errors in the log.
 #XBOX_GL_DEBUG=1
+# Vulkan build only (VULKAN=1): 0 for no pipeline cache file (it makes the
+# second time a scene is drawn smooth), and 1 to log shaders that fail.
+#XBOX_VK_PIPECACHE=vk_pipeline.cache
+#XBOX_VK_DEBUG=0
 
 # ── Picture ─────────────────────────────────────────────────────────
 # Frame rate limit: 60, 30, ... or 0 for none.

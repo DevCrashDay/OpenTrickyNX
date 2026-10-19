@@ -2,6 +2,11 @@
 #   _WIN32 -> backed by Direct3D 11 (d3d8_*.c, d3d8_combiners.c, d3d8_vsh.c)
 #   POSIX  -> backed by OpenGL 3.3 core via SDL2 (d3d8_gl_*.c); GL loaded by
 #             libepoxy on Linux, glad on Nintendo Switch
+#   POSIX with -DXBOX_VULKAN=ON -> backed by Vulkan 1.3 (d3d8_vk_*.c): the
+#             system loader on Linux, NVK (mesa-switch) on Nintendo Switch;
+#             shaders compiled at run time by glslang
+
+option(XBOX_VULKAN "Use the Vulkan renderer instead of OpenGL (POSIX)" OFF)
 
 if(WIN32)
     add_library(xbox_d3d8 STATIC
@@ -21,6 +26,48 @@ if(WIN32)
         d3d8_vsh.c
     )
     target_link_libraries(xbox_d3d8 PUBLIC platform d3d11 dxgi dxguid d3dcompiler windowscodecs ole32)
+elseif(XBOX_VULKAN)
+    add_library(xbox_d3d8 STATIC
+        d3d8_vk_core.c
+        d3d8_vk_device.c
+        d3d8_vk_resources.c
+        d3d8_vk_draw.c
+        d3d8_gl_vsh.c
+    )
+    target_compile_definitions(xbox_d3d8 PUBLIC XBOX_VULKAN=1)
+    # { VK_STRUCTURE_TYPE_... } initialisers leave the rest zero on purpose
+    target_compile_options(xbox_d3d8 PRIVATE -Wno-missing-field-initializers)
+    find_package(SDL2 REQUIRED)
+    # glslang and SPIRV-Tools as static libraries, in one link group so their
+    # order does not matter. GLSLANG_DIR: an install prefix (the system's if
+    # empty).
+    set(GLSLANG_DIR "" CACHE PATH "glslang install prefix (built for the Switch there)")
+    if(GLSLANG_DIR)
+        set(_gl_hint PATHS ${GLSLANG_DIR}/lib NO_DEFAULT_PATH)
+        target_include_directories(xbox_d3d8 PUBLIC ${GLSLANG_DIR}/include)
+    endif()
+    foreach(lib glslang glslang-default-resource-limits SPIRV MachineIndependent OSDependent GenericCodeGen SPIRV-Tools-opt SPIRV-Tools)
+        find_library(GLSLANG_LIB_${lib} NAMES lib${lib}.a ${lib} ${_gl_hint})
+        if(GLSLANG_LIB_${lib})
+            list(APPEND GLSLANG_LIBS ${GLSLANG_LIB_${lib}})
+        endif()
+    endforeach()
+    if(NOT GLSLANG_LIB_glslang)
+        message(FATAL_ERROR "XBOX_VULKAN: glslang not found (set GLSLANG_DIR)")
+    endif()
+    if(NINTENDO_SWITCH)
+        # Switch: NVK from mesa-switch, linked in (no loader; surfaces through
+        # VK_NN_vi_surface). NVK_SDK: its install prefix.
+        set(NVK_SDK "" CACHE PATH "mesa-switch install prefix (include/vulkan, lib/libvulkan_nouveau.a)")
+        find_library(NVK_LIBRARY vulkan_nouveau PATHS ${NVK_SDK}/lib REQUIRED NO_DEFAULT_PATH)
+        target_include_directories(xbox_d3d8 PUBLIC ${NVK_SDK}/include)
+        target_link_libraries(xbox_d3d8 PUBLIC platform SDL2::SDL2
+            -Wl,--start-group ${GLSLANG_LIBS} -Wl,--end-group ${NVK_LIBRARY} nx stdc++ m)
+    else()
+        find_package(Vulkan REQUIRED)
+        target_link_libraries(xbox_d3d8 PUBLIC platform SDL2::SDL2 Vulkan::Vulkan
+            -Wl,--start-group ${GLSLANG_LIBS} -Wl,--end-group stdc++ m)
+    endif()
 else()
     # OpenGL 3.3 core backend (d3d8_gl_*.c) for Linux and Nintendo Switch.
     add_library(xbox_d3d8 STATIC
@@ -62,5 +109,10 @@ if(XBOX_BUILD_TESTS)
     if(NOT WIN32)
         find_package(Threads REQUIRED)
         target_link_libraries(shcache_test PRIVATE Threads::Threads)
+    endif()
+    if(XBOX_VULKAN AND NOT NINTENDO_SWITCH)
+        # The Vulkan renderer without the game (tests/vk_smoke_test.c).
+        add_executable(vk_smoke_test tests/vk_smoke_test.c ../nv2a/nv2a_psh.c)
+        target_link_libraries(vk_smoke_test PRIVATE xbox_d3d8)
     endif()
 endif()

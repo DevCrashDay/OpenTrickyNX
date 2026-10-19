@@ -93,8 +93,26 @@ Windows, and can be changed there.
 ## Rendering
 
 The Switch runs the OpenGL renderer through Mesa's Nouveau driver (devkitPro's switch-mesa). SMAA, soft shadows
-and smoother legs start off here. A Vulkan renderer through the community's Mesa NVK builds for the Switch, as
-flatout2-sw / fo2x uses, may come later; the renderer sits behind one interface.
+and smoother legs start off here.
+
+A Vulkan renderer, through the community's Mesa NVK builds for the Switch as flatout2-sw / fo2x uses, can be built
+instead. It is new and not yet tried on a console, so OpenGL stays the default:
+
+```bash
+port/tools/build_glslang_switch.sh                  # once: glslang for the Switch, in build/glslang-switch
+VULKAN=1 NVK_SDK=/path/to/mesa-switch/usr/local GLSLANG_DIR=build/glslang-switch \
+    ./build_switch.sh "path/to/SSX Tricky (USA).iso"
+```
+
+`NVK_SDK` is an install of mesa-switch built with NVK (`include/vulkan/`, `lib/libvulkan_nouveau.a`). The build goes
+to `port/build-switch-vk/`. Shaders are compiled on the console the first time they are needed; the driver keeps
+the compiled pipelines in `vk_pipeline.cache` beside the `.nro`, so the first race of each kind stutters and later
+ones do not. SMAA, soft shadows and the post chain are not in the Vulkan renderer.
+
+| | |
+|---|---|
+| `XBOX_VK_PIPECACHE=0` | No pipeline cache file (or a path for it). |
+| `XBOX_VK_DEBUG=1` | Writes the source of any shader that fails to compile to the log. |
 
 ## Troubleshooting
 
@@ -113,3 +131,13 @@ cmake --build port/build-linux -j
 ```
 
 Without the translated game, `-DSSX_STUB_GEN=ON` links a build check that does not play (what CI builds).
+
+`-DXBOX_VULKAN=ON` builds the Vulkan renderer instead (needs the Vulkan loader and headers, and glslang's static
+libraries, e.g. Debian's `libvulkan-dev glslang-dev`). `XBOX_VK_VALIDATE=1` turns on the Khronos validation layer,
+and `XBOX_VK_DEVICE=<n>` picks a GPU. The renderer has a test that needs no game, which passes on Mesa's lavapipe:
+
+```bash
+cmake -S xboxrecomp -B build-vk -DXBOX_VULKAN=ON -DXBOX_BUILD_TESTS=ON
+cmake --build build-vk --target vk_smoke_test
+XBOX_VK_VALIDATE=1 build-vk/src/d3d/vk_smoke_test        # and again with: msaa
+```

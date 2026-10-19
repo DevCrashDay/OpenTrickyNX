@@ -11,6 +11,11 @@
 # the devkitpro/devkita64 image, pulled on first use. Set DEVKITPRO instead to
 # use an installed devkitPro and skip Docker.
 #
+# VULKAN=1 builds the Vulkan renderer (NVK, as flatout2-sw / fo2x) instead of
+# OpenGL, in port/build-switch-vk/. It needs two install prefixes:
+#   NVK_SDK      mesa-switch built with NVK (include/vulkan, lib/libvulkan_nouveau.a)
+#   GLSLANG_DIR  glslang built for the Switch (port/tools/build_glslang_switch.sh)
+#
 # Result: dist/switch/opentricky/"SSX Tricky.nro". Copy that folder to
 # sdmc:/switch/ with your disc image in it -- see docs/switch.md. The build
 # contains code translated from your copy of the game: keep it to yourself.
@@ -66,6 +71,15 @@ if [ -z "${DEVKITPRO:-}" ] && ! command -v docker >/dev/null 2>&1; then
     exit 1
 fi
 
+VULKAN="${VULKAN:-0}"
+if [ "$VULKAN" = 1 ]; then
+    for v in NVK_SDK GLSLANG_DIR; do
+        [ -n "${!v:-}" ] && [ -d "${!v}" ] || { echo "VULKAN=1 needs $v (an install prefix), see the top of this script."; exit 1; }
+    done
+    [ -f "$NVK_SDK/lib/libvulkan_nouveau.a" ] || { echo "No lib/libvulkan_nouveau.a in NVK_SDK=$NVK_SDK"; exit 1; }
+    [ -f "$GLSLANG_DIR/lib/libglslang.a" ] || { echo "No lib/libglslang.a in GLSLANG_DIR=$GLSLANG_DIR (port/tools/build_glslang_switch.sh builds it)"; exit 1; }
+fi
+
 if [ -n "$ISO" ]; then
     echo "== [1/4] reading your disc image"
     "$PY" port/tools/extract_iso.py "$ISO" game_files
@@ -91,10 +105,24 @@ fi
 
 echo "== [3/4] compiling for the Switch (10 to 20 minutes the first time, then only what changed)"
 BUILD=port/build-switch
+VK_ARGS=""
+DOCKER_VK=()
+if [ "$VULKAN" = 1 ]; then
+    BUILD=port/build-switch-vk
+    if [ -n "${DEVKITPRO:-}" ]; then
+        VK_ARGS="-DXBOX_VULKAN=ON -DNVK_SDK=$NVK_SDK -DGLSLANG_DIR=$GLSLANG_DIR"
+    else
+        # the two prefixes, mounted read-only into the container
+        NVK_M="$NVK_SDK"; GL_M="$GLSLANG_DIR"
+        [ "$ON_WINDOWS" = 1 ] && { NVK_M="$(cygpath -m "$NVK_SDK")"; GL_M="$(cygpath -m "$GLSLANG_DIR")"; }
+        DOCKER_VK=(-v "$NVK_M:/opt/nvk:ro" -v "$GL_M:/opt/glslang:ro")
+        VK_ARGS="-DXBOX_VULKAN=ON -DNVK_SDK=/opt/nvk -DGLSLANG_DIR=/opt/glslang"
+    fi
+fi
 # Only the Release flags are set here: CMAKE_C_FLAGS would replace the Switch
 # toolchain's own (-D__SWITCH__, the CPU, -fPIE).
 CONFIGURE="cmake -S port -B $BUILD -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_FLAGS_RELEASE='-O2 -DNDEBUG -ffile-prefix-map=/src/='"
+    -DCMAKE_C_FLAGS_RELEASE='-O2 -DNDEBUG -ffile-prefix-map=/src/=' $VK_ARGS"
 # A folder configured by an earlier version of this script, with the Switch
 # toolchain's flags replaced: start it again.
 if grep -q "^CMAKE_C_FLAGS:STRING=-ffile-prefix-map" "$BUILD/CMakeCache.txt" 2>/dev/null; then
@@ -112,7 +140,7 @@ else
         MOUNT="$ROOT"; USER_ARGS=(-u "$(id -u):$(id -g)")
     fi
     docker info >/dev/null 2>&1 || { echo "Docker is not running: start Docker (Docker Desktop on Windows) and try again."; exit 1; }
-    docker run --rm "${USER_ARGS[@]}" -v "$MOUNT:/src" -w /src devkitpro/devkita64 bash -c "
+    docker run --rm "${USER_ARGS[@]}" ${DOCKER_VK[@]+"${DOCKER_VK[@]}"} -v "$MOUNT:/src" -w /src devkitpro/devkita64 bash -c "
         set -e
         [ -f $BUILD/CMakeCache.txt ] || ${CONFIGURE/cmake//opt/devkitpro/portlibs/switch/bin/aarch64-none-elf-cmake}
         cmake --build $BUILD -j \$(nproc)"
