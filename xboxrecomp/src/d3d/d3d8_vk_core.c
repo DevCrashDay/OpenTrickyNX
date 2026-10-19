@@ -870,9 +870,14 @@ static char *glsl_for_vulkan(const char *src, int len, int fragment)
     return o.p;
 }
 
+/* glslang, and NVK's own shader compiler (pipelines, device setup), run on
+ * this thread: they need far more stack than the Switch game thread has left
+ * by the time the game reaches them. */
 static struct {
     SDL_Thread *thr;
     SDL_sem    *go, *done;
+    void      (*fn)(void *);
+    void       *arg;
     int         fragment;
     const char *src;
     uint32_t   *spv;
@@ -880,12 +885,13 @@ static struct {
     char        log[4096];
 } s_job;
 
-static void compile_job(void)
+static void compile_job(void *unused)
 {
     glslang_input_t in;
     glslang_shader_t *sh;
     glslang_program_t *pr = NULL;
     const glslang_stage_t st = s_job.fragment ? GLSLANG_STAGE_FRAGMENT : GLSLANG_STAGE_VERTEX;
+    (void)unused;
     memset(&in, 0, sizeof in);
     in.language = GLSLANG_SOURCE_GLSL;
     in.stage = st;
@@ -929,10 +935,26 @@ static int compile_thread(void *arg)
     glslang_initialize_process();
     for (;;) {
         SDL_SemWait(s_job.go);
-        compile_job();
+        s_job.fn(s_job.arg);
         SDL_SemPost(s_job.done);
     }
     return 0;
+}
+
+/* Runs fn(arg) on the compiler thread and waits for it. */
+static int on_big_stack(void (*fn)(void *), void *arg)
+{
+    if (!s_job.thr) {
+        s_job.go = SDL_CreateSemaphore(0);
+        s_job.done = SDL_CreateSemaphore(0);
+        s_job.thr = SDL_CreateThreadWithStackSize(compile_thread, "vk-compile", 8u << 20, NULL);
+        if (!s_job.thr) { fprintf(stderr, "D3D8: no shader compiler thread\n"); return 0; }
+    }
+    s_job.fn = fn;
+    s_job.arg = arg;
+    SDL_SemPost(s_job.go);
+    SDL_SemWait(s_job.done);
+    return 1;
 }
 
 VkShaderModule vkd_shader_glsl(int fragment, const char *src, int len, const char *name)
@@ -941,18 +963,11 @@ VkShaderModule vkd_shader_glsl(int fragment, const char *src, int len, const cha
     VkShaderModule m = VK_NULL_HANDLE;
     char *text;
     if (len < 0) len = (int)strlen(src);
-    if (!s_job.thr) {
-        s_job.go = SDL_CreateSemaphore(0);
-        s_job.done = SDL_CreateSemaphore(0);
-        s_job.thr = SDL_CreateThreadWithStackSize(compile_thread, "vk-glslang", 4u << 20, NULL);
-        if (!s_job.thr) { fprintf(stderr, "D3D8: no shader compiler thread\n"); return VK_NULL_HANDLE; }
-    }
     text = glsl_for_vulkan(src, len, fragment);
     if (!text) return VK_NULL_HANDLE;
     s_job.fragment = fragment;
     s_job.src = text;
-    SDL_SemPost(s_job.go);
-    SDL_SemWait(s_job.done);
+    if (!on_big_stack(compile_job, NULL)) { free(text); return VK_NULL_HANDLE; }
     if (!s_job.spv) {
         static int failures;
         if (failures++ < 6) {
@@ -987,6 +1002,14 @@ static unsigned pipe_hash(const VkdPipeKey *k)
     size_t i;
     for (i = 0; i < sizeof *k; i++) { h ^= b[i]; h *= 16777619u; }
     return h & (PIPE_SLOTS - 1);
+}
+
+struct pipe_call { const VkGraphicsPipelineCreateInfo *pi; VkPipeline *p; VkResult r; };
+
+static void pipe_call_run(void *arg)
+{
+    struct pipe_call *c = (struct pipe_call *)arg;
+    c->r = vkCreateGraphicsPipelines(g_vk.dev, s_pcache, 1, c->pi, NULL, c->p);
 }
 
 static VkPipeline pipe_build(const VkdPipeKey *k)
@@ -1064,7 +1087,11 @@ static VkPipeline pipe_build(const VkdPipeKey *k)
     pi.pColorBlendState = &cb;
     pi.pDynamicState = &dy;
     pi.layout = g_vk.layout;
-    r = vkCreateGraphicsPipelines(g_vk.dev, s_pcache, 1, &pi, NULL, &p);
+    {
+        struct pipe_call c = { &pi, &p, VK_ERROR_INITIALIZATION_FAILED };
+        on_big_stack(pipe_call_run, &c);
+        r = c.r;
+    }
     if (r != VK_SUCCESS) {
         static int failures;
         if (failures++ < 6) vk_fail("vkCreateGraphicsPipelines", r);
@@ -1477,10 +1504,11 @@ static int device_create(void)
     for (i = 0; i < nd; i++) {
         VkPhysicalDeviceProperties p;
         VkQueueFamilyProperties qp[16];
-        VkExtensionProperties ep[512];
+        /* static: 130 KB, more than the Switch game thread's stack has left */
+        static VkExtensionProperties ep[512];
+        static const char *names[512];
         uint32_t nq = 16, ne = 512, q, k;
         int score, ok = 1;
-        const char *names[512];
         vkGetPhysicalDeviceProperties(devs[i], &p);
         if (p.apiVersion < VK_API_VERSION_1_3) continue;
         vkEnumerateDeviceExtensionProperties(devs[i], NULL, &ne, ep);
@@ -1622,12 +1650,16 @@ static int frames_create(void)
     return 1;
 }
 
+static int s_device_ok;
+static void device_create_run(void *unused) { (void)unused; s_device_ok = device_create(); }
+
 int vkd_core_init(void *window)
 {
     s_window = window;
     s_tid = SDL_ThreadID();
     s_has_tid = 1;
-    if (!instance_create() || !surface_create() || !device_create() || !layout_create() || !frames_create()) {
+    if (!instance_create() || !surface_create() || !on_big_stack(device_create_run, NULL) || !s_device_ok ||
+        !layout_create() || !frames_create()) {
         fprintf(stderr, "D3D8: Vulkan setup failed\n");
         return 0;
     }
