@@ -23,19 +23,34 @@ if [ -z "$ISO" ] && [ ! -f game_files/default.xbe ]; then
     echo "usage: ./build_switch.sh \"path/to/SSX Tricky (USA).iso\""
     exit 2
 fi
-PY="${PYTHON:-}"
-if [ -z "$PY" ]; then
-    PY=python3
-    command -v python3 >/dev/null 2>&1 || PY=python
-fi
 # On Windows (MSYS2): Docker wants a Windows path for the mounted folder, and
 # MSYS2 must leave the container's own paths (/src, /opt/...) alone.
 ON_WINDOWS=0
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) ON_WINDOWS=1 ;; esac
 
 echo "== [0/4] checking the tools"
-"$PY" -c "import capstone, numpy, PIL" 2>/dev/null || {
-    echo "Python needs capstone, numpy and pillow:  $PY -m pip install capstone numpy pillow"
+PY="${PYTHON:-}"
+if [ -z "$PY" ] && [ "$ON_WINDOWS" = 1 ]; then
+    # MSYS2's own Python, never the Windows "python3" placeholder (it opens
+    # the Microsoft Store and waits).
+    PY="${MINGW_PREFIX:-/ucrt64}/bin/python.exe"
+    if [ ! -x "$PY" ]; then
+        echo "MSYS2's Python is not installed. In the MSYS2 UCRT64 shell:"
+        echo "  pacman -S --needed mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-python-capstone \\"
+        echo "            mingw-w64-ucrt-x86_64-python-numpy mingw-w64-ucrt-x86_64-python-pillow"
+        exit 1
+    fi
+elif [ -z "$PY" ]; then
+    PY=python3
+    command -v python3 >/dev/null 2>&1 || PY=python
+fi
+"$PY" -c "import capstone, numpy, PIL" </dev/null 2>/dev/null || {
+    if [ "$ON_WINDOWS" = 1 ]; then
+        echo "Python needs capstone, numpy and pillow. In the MSYS2 UCRT64 shell:"
+        echo "  pacman -S --needed mingw-w64-ucrt-x86_64-python-capstone mingw-w64-ucrt-x86_64-python-numpy mingw-w64-ucrt-x86_64-python-pillow"
+    else
+        echo "Python needs capstone, numpy and pillow:  $PY -m pip install capstone numpy pillow"
+    fi
     exit 1
 }
 if [ -z "${DEVKITPRO:-}" ] && ! command -v docker >/dev/null 2>&1; then
