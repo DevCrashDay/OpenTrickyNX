@@ -67,6 +67,7 @@ set(GAME_SOURCES
     src/posix/ot_posix.c
     src/posix/ot_pad.c
     src/posix/ot_crash.c
+    src/posix/ot_switch_nx.c
 )
 
 # ── Resources ──────────────────────────────────────────────────────────────

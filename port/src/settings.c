@@ -452,6 +452,13 @@ void settings_defaults(Settings *s)
 {
     int i;
     for (i = 0; i < SETTINGS_COUNT; i++) copy_value(s->v[i], k_reg[i].def);
+#ifdef __SWITCH__
+    /* The Switch's CPU and GPU have no time to spare: the PC extras start off
+     * (settings.ini or "SSX Tricky env.txt" can still turn them on). */
+    copy_value(s->v[S_SMAA], "off");
+    copy_value(s->v[S_SOFT_SHADOWS], "0");
+    copy_value(s->v[S_SMOOTH_LEGS], "0");
+#endif
     s->extra[0] = 0;
     s->ignored[0] = 0;
 }

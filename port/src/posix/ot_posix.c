@@ -631,6 +631,7 @@ static void on_abort(int sig)
     (void)sig;
     fprintf(stderr, "\n[SSX Tricky] stopped (abort)\n");
     fflush(stderr);
+    fsync(STDERR_FILENO);
     MessageBoxA(NULL, "The game stopped with an error.\n\n"
                 "SSX Tricky.log, in the same folder as the game, says where.", "SSX Tricky", MB_ICONERROR);
     signal(SIGABRT, SIG_DFL);
@@ -645,35 +646,73 @@ static void on_abort(int sig)
 /* The log: stdout and stderr both write here. A file on the SD card only
  * grows on the card when its data is committed, and a program the system
  * stops leaves nothing it has not committed: the first lines (the start, where
- * a port fails first) are committed one by one, the rest four times a second. */
+ * a port fails first) are written and committed one by one. After that, lines
+ * collect in memory and a thread writes and commits them four times a second,
+ * so the game never waits on the card; a crash report commits what is left
+ * (fsync on stderr). */
 static int s_log_fd = -1;
 static volatile unsigned s_log_writes;
-#define LOG_SYNC_EACH 4000
+#define LOG_SYNC_EACH 1500
+#define LOG_BUF_SIZE (256 * 1024)
+static char s_log_buf[LOG_BUF_SIZE];
+static size_t s_log_len;
+static Mutex s_log_mx;
+
+static void log_flush(void)
+{
+    mutexLock(&s_log_mx);
+    if (s_log_len && s_log_fd >= 0) write(s_log_fd, s_log_buf, s_log_len);
+    s_log_len = 0;
+    mutexUnlock(&s_log_mx);
+}
 
 static ssize_t log_write_r(struct _reent *r, void *fd, const char *ptr, size_t len)
 {
-    ssize_t n;
     (void)r; (void)fd;
-    n = write(s_log_fd, ptr, len);
-    if (s_log_writes++ < LOG_SYNC_EACH) fsync(s_log_fd);
-    return n < 0 ? 0 : n;
+    if (s_log_writes < LOG_SYNC_EACH) {
+        ssize_t n = write(s_log_fd, ptr, len);
+        if (s_log_writes++ < LOG_SYNC_EACH) fsync(s_log_fd);
+        return n < 0 ? 0 : n;
+    }
+    mutexLock(&s_log_mx);
+    if (s_log_len + len > LOG_BUF_SIZE) {      /* full: write it out here */
+        if (s_log_len) write(s_log_fd, s_log_buf, s_log_len);
+        s_log_len = 0;
+    }
+    if (len > LOG_BUF_SIZE) write(s_log_fd, ptr, len);
+    else { memcpy(s_log_buf + s_log_len, ptr, len); s_log_len += len; }
+    mutexUnlock(&s_log_mx);
+    return len;
 }
 
+/* Also the crash report's commit: if the crashed thread holds the lock, the
+ * lines in memory are lost rather than the report waiting forever. */
 static int log_fsync_r(struct _reent *r, void *fd)
 {
+    int tries;
     (void)r; (void)fd;
+    for (tries = 0; tries < 50; tries++) {
+        if (mutexTryLock(&s_log_mx)) {
+            if (s_log_len && s_log_fd >= 0) write(s_log_fd, s_log_buf, s_log_len);
+            s_log_len = 0;
+            mutexUnlock(&s_log_mx);
+            break;
+        }
+        svcSleepThread(1000000LL);
+    }
     return s_log_fd >= 0 ? fsync(s_log_fd) : 0;
 }
 
 static const devoptab_t s_log_dev = { .name = "log", .write_r = log_write_r, .fsync_r = log_fsync_r };
 
-static void on_exit_log(void) { printf("[SSX Tricky] exit\n"); if (s_log_fd >= 0) fsync(s_log_fd); }
+static void on_exit_log(void) { printf("[SSX Tricky] exit\n"); log_flush(); if (s_log_fd >= 0) fsync(s_log_fd); }
 
 static void *log_sync_thread(void *arg)
 {
     (void)arg;
     for (;;) {
         svcSleepThread(250000000LL);
+        log_flush();
         if (s_log_fd >= 0) fsync(s_log_fd);
     }
     return NULL;
@@ -705,6 +744,7 @@ void ot_host_init(void)
         }
     }
     printf("SSX Tricky (OpenTrickyNX) starting: %s\n", s_argc > 0 ? s_argv[0] : "?");
+    ot_switch_env_load();
     {
         pthread_t t;
         if (pthread_create(&t, NULL, log_sync_thread, NULL) == 0) pthread_detach(t);
@@ -724,6 +764,7 @@ void ot_host_init(void)
             exit(1);
         }
     }
+    ot_switch_clocks();
     romfsInit();
 #endif
     ot_pad_init();

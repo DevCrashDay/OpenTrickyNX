@@ -32,6 +32,10 @@ void ot_set_args(int argc, char **argv);
 /* Host services the game needs before anything else: on the Switch the
  * romfs and controllers, elsewhere the controllers. */
 void ot_host_init(void);
+#ifdef __SWITCH__
+void ot_switch_env_load(void);   /* "SSX Tricky env.txt" beside the .nro (ot_switch_nx.c) */
+void ot_switch_clocks(void);     /* OT_CPU_MHZ / OT_GPU_MHZ / OT_MEM_MHZ */
+#endif
 void ot_pad_init(void);
 /* The executable's folder, '/'-separated, without the trailing '/'. On the
  * Switch it is the folder of the .nro (sdmc:/switch/opentricky). */

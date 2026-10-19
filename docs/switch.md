@@ -64,7 +64,23 @@ All in `sdmc:/switch/opentricky/`:
 | `game/` | Your extracted disc (`default.xbe` and the `data` folder). |
 | `*.iso` | Or, without `game/`: your disc image, read in place. |
 | `settings.ini` | Optional: the settings, the same file as on Windows. Not created by the game; write only the lines you change, under their section, e.g. `[Display]` then the key. |
+| `SSX Tricky env.txt` | Optional: `KEY=VALUE` lines read at start (see below). They win over `settings.ini`. |
 | `Saves/` | Saved games (the Xbox hard disk's save area). |
+
+### SSX Tricky env.txt
+
+One `KEY=VALUE` per line, `#` starts a comment. Useful lines:
+
+| | |
+|---|---|
+| `OT_CPU_MHZ=1785` | CPU clock. Default 1785; `0` keeps the system's 1020. |
+| `OT_GPU_MHZ=768` | GPU clock. Default 768 (up to 921). |
+| `OT_MEM_MHZ=1600` | Memory clock. Default 1600. |
+| `OT_CLOCK_FORCE=1` | Set the clocks even while sys-clk or Horizon OC runs (by default their profile rules). |
+| `XBOX_PERF=1` | Writes a timing summary to the log every 2 seconds. |
+
+The higher clocks (the ones flatout2-sw / fo2x uses docked) cost heat and battery. The system's clocks come back
+when the game closes.
 
 ## Controls
 
@@ -75,10 +91,9 @@ Windows, and can be changed there.
 
 ## Rendering
 
-The Switch runs the OpenGL renderer through Mesa's Nouveau driver. Vulkan is not available to Switch homebrew
-(only OpenGL and deko3d), and deko3d needs its shaders compiled in advance, while this game's colour combiners
-are built into shaders while it runs. The renderer sits behind one interface, so another backend can be added
-later.
+The Switch runs the OpenGL renderer through Mesa's Nouveau driver (devkitPro's switch-mesa). SMAA, soft shadows
+and smoother legs start off here. A Vulkan renderer through the community's Mesa NVK builds for the Switch, as
+flatout2-sw / fo2x uses, may come later; the renderer sits behind one interface.
 
 ## Troubleshooting
 
