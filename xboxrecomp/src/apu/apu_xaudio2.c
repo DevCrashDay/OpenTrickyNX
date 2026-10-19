@@ -544,6 +544,7 @@ int xa2_get_buffer_size(void)
 #include <stdlib.h>
 #include <string.h>
 #if defined(__SWITCH__)
+#include <malloc.h>
 #include <switch.h>
 #endif
 
@@ -557,8 +558,16 @@ int xa2_get_buffer_size(void)
 
 /* The device pulls from this FIFO in its callback (SDL's own queue leaves no
  * way into the device thread, and on the Switch that thread needs a raised
- * priority, below). Guarded by SDL_LockAudioDevice. Counts in int16 values. */
+ * priority, below). Guarded by XA2_LOCK. Counts in int16 values. */
 static SDL_AudioDeviceID g_dev;
+#if defined(__SWITCH__)
+static Mutex             g_mx;
+#define XA2_LOCK()   mutexLock(&g_mx)
+#define XA2_UNLOCK() mutexUnlock(&g_mx)
+#else
+#define XA2_LOCK()   SDL_LockAudioDevice(g_dev)
+#define XA2_UNLOCK() SDL_UnlockAudioDevice(g_dev)
+#endif
 static int               g_channels = 2;
 static int16_t           g_fifo[XA2_FIFO];
 static int               g_rd, g_fill;
@@ -605,6 +614,9 @@ static void SDLCALL xa2_callback(void *user, Uint8 *stream, int len)
     int n = len / (int)sizeof(int16_t), take, first, i;
     (void)user;
     if (!g_callbacks++) xa2_device_thread_setup();
+#if defined(__SWITCH__)
+    XA2_LOCK();                         /* SDL holds its device lock here */
+#endif
     take = n < g_fill ? n : g_fill;
     first = XA2_FIFO - g_rd < take ? XA2_FIFO - g_rd : take;
     memcpy(out, g_fifo + g_rd, (size_t)first * sizeof(int16_t));
@@ -615,6 +627,9 @@ static void SDLCALL xa2_callback(void *user, Uint8 *stream, int len)
         memset(out + take, 0, (size_t)(n - take) * sizeof(int16_t));
         if (g_buffers) g_underruns++;
     }
+#if defined(__SWITCH__)
+    XA2_UNLOCK();
+#endif
     if (g_tone) {
         /* 440 Hz on every channel, over whatever the game plays: proves the
          * device path on its own. */
@@ -630,6 +645,109 @@ static void SDLCALL xa2_callback(void *user, Uint8 *stream, int len)
     }
 }
 
+#if defined(__SWITCH__)
+/* The Switch: audout directly, with XA2_NX_BUFS buffers queued at the device.
+ * SDL's Switch driver (SDL2 2.28, devkitPro) hands audren one buffer and waits
+ * until it has finished playing before it asks for the next, so between any
+ * two buffers the output stopped for a wake-up and a callback: 1.7 ms of
+ * silence per 10.7 ms in Ash's log (810 buffers played per 10 s instead of
+ * 938), heard as constant stutter, and the game's mix, produced at the real
+ * rate, overflowed the queue and was dropped in chunks. */
+#define XA2_NX_BUFS    4
+#define XA2_NX_SAMPLES 512                      /* 10.7 ms each */
+static AudioOutBuffer g_nx_buf[XA2_NX_BUFS];
+static Thread         g_nx_thread;
+static volatile int   g_nx_stop;
+
+static void xa2_nx_fill(AudioOutBuffer *b)
+{
+    b->data_size = XA2_NX_SAMPLES * 2 * sizeof(int16_t);
+    b->data_offset = 0;
+    xa2_callback(NULL, (Uint8 *)b->buffer, (int)b->data_size);
+    armDCacheFlush(b->buffer, b->data_size);
+}
+
+static void xa2_nx_thread(void *arg)
+{
+    (void)arg;
+    while (!g_nx_stop) {
+        AudioOutBuffer *rel = NULL;
+        u32 n = 0;
+        if (R_FAILED(audoutWaitPlayFinish(&rel, &n, 100000000ull)) || !rel || !n) continue;
+        do {
+            xa2_nx_fill(rel);
+            audoutAppendAudioOutBuffer(rel);
+            rel = NULL;
+            n = 0;
+        } while (R_SUCCEEDED(audoutGetReleasedAudioOutBuffer(&rel, &n)) && rel && n);
+    }
+}
+
+int xa2_init(void)
+{
+    const char *t = getenv("XBOX_AUDIO_TONE");
+    const char *e = getenv("OT_AUDIO_PRIO");
+    int prio = (e && *e) ? (int)strtol(e, NULL, 0) : 0x2B, i;
+    Result rc;
+
+    if (g_dev) return 1;
+    if (prio <= 0 || prio > 0x3F) prio = 0x3B;
+    g_tone = t && t[0] == '1';
+    g_channels = 2;
+    mutexInit(&g_mx);
+    if (R_FAILED(rc = audoutInitialize())) {
+        fprintf(stderr, "[XA2] audout unavailable (0x%X)\n", rc);
+        return 0;
+    }
+    if (audoutGetSampleRate() != XA2_SAMPLE_RATE || audoutGetChannelCount() != 2 ||
+        audoutGetPcmFormat() != PcmFormat_Int16 || R_FAILED(rc = audoutStartAudioOut())) {
+        fprintf(stderr, "[XA2] audout: %u Hz, %u channel(s), format %d (rc 0x%X): no sound\n",
+                audoutGetSampleRate(), audoutGetChannelCount(), (int)audoutGetPcmFormat(), rc);
+        audoutExit();
+        return 0;
+    }
+    g_dev = 1;                          /* what the queue below tests for */
+    for (i = 0; i < XA2_NX_BUFS; i++) {
+        size_t sz = (XA2_NX_SAMPLES * 2 * sizeof(int16_t) + 0xFFF) & ~(size_t)0xFFF;
+        g_nx_buf[i].buffer = memalign(0x1000, sz);
+        g_nx_buf[i].buffer_size = sz;
+        memset(g_nx_buf[i].buffer, 0, sz);
+        g_nx_buf[i].data_size = XA2_NX_SAMPLES * 2 * sizeof(int16_t);
+        armDCacheFlush(g_nx_buf[i].buffer, sz);
+        audoutAppendAudioOutBuffer(&g_nx_buf[i]);
+    }
+    g_nx_stop = 0;
+    g_callbacks = 1;                    /* the thread starts at its priority */
+    if (R_FAILED(rc = threadCreate(&g_nx_thread, xa2_nx_thread, NULL, NULL, 0x8000, prio, -2)) ||
+        R_FAILED(rc = threadStart(&g_nx_thread))) {
+        fprintf(stderr, "[XA2] audout thread failed (0x%X)\n", rc);
+        audoutStopAudioOut();
+        audoutExit();
+        g_dev = 0;
+        return 0;
+    }
+    fprintf(stderr, "[XA2] audout: 48000 Hz, 2 channels, %d x %d-sample buffers, thread priority 0x%X%s\n",
+            XA2_NX_BUFS, XA2_NX_SAMPLES, prio,
+            g_tone ? ", 440 Hz test tone on (XBOX_AUDIO_TONE=1)" : "");
+    return 1;
+}
+
+void xa2_shutdown(void)
+{
+    int i;
+    if (g_dev) {
+        g_nx_stop = 1;
+        threadWaitForExit(&g_nx_thread);
+        threadClose(&g_nx_thread);
+        audoutStopAudioOut();
+        audoutExit();
+        for (i = 0; i < XA2_NX_BUFS; i++) free(g_nx_buf[i].buffer);
+        g_dev = 0;
+    }
+    fprintf(stderr, "[XA2] %lu buffers sent, %lu dropped, %lu device buffers, %lu underruns\n",
+            g_buffers, g_drops, g_callbacks, g_underruns);
+}
+#else
 int xa2_init(void)
 {
     SDL_AudioSpec want, have;
@@ -676,6 +794,7 @@ void xa2_shutdown(void)
     fprintf(stderr, "[XA2] %lu buffers sent, %lu dropped, %lu device callbacks, %lu underruns\n",
             g_buffers, g_drops, g_callbacks, g_underruns);
 }
+#endif /* __SWITCH__ */
 
 int xa2_is_active(void) { return g_dev != 0; }
 int xa2_channels(void)  { return g_channels; }
@@ -685,9 +804,9 @@ int xa2_queued(void)
 {
     int fill;
     if (!g_dev) return 0;
-    SDL_LockAudioDevice(g_dev);
+    XA2_LOCK();
     fill = g_fill;
-    SDL_UnlockAudioDevice(g_dev);
+    XA2_UNLOCK();
     return fill / (XA2_BUF_SAMPLES * g_channels);
 }
 
@@ -719,7 +838,7 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
     int n = (num_samples > XA2_BUF_SAMPLES ? XA2_BUF_SAMPLES : num_samples) * g_channels;
     int wr, first, ok = 0;
     if (!g_dev) return 0;
-    SDL_LockAudioDevice(g_dev);
+    XA2_LOCK();
     if (g_fill + n <= XA2_NUM_BUFS * XA2_BUF_SAMPLES * g_channels) {
         wr = (g_rd + g_fill) % XA2_FIFO;
         first = XA2_FIFO - wr < n ? XA2_FIFO - wr : n;
@@ -731,7 +850,7 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
     } else {
         g_drops++;
     }
-    SDL_UnlockAudioDevice(g_dev);
+    XA2_UNLOCK();
     xa2_report(samples, n);
     return ok;
 }
