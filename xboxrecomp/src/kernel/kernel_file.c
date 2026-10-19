@@ -1299,6 +1299,22 @@ static NTSTATUS nt_create_file(
     }
 
     if (fd < 0) {
+        /* Directories cannot be open()ed on every host (the Switch's SD card
+         * driver opens files only): a directory that exists gets a handle by
+         * its path alone, which is all the directory calls use. Without it
+         * U:\ "did not exist" and the title reported no hard disk. */
+        struct stat dst;
+        if (stat(host_path, &dst) == 0 && S_ISDIR(dst.st_mode) &&
+            CreateDisposition != XBOX_FILE_CREATE) {
+            *FileHandle = w32_open_handle(-1, host_path);
+            if (IoStatusBlock) {
+                IoStatusBlock->Status = STATUS_SUCCESS;
+                IoStatusBlock->Information = 1;
+            }
+            return STATUS_SUCCESS;
+        }
+    }
+    if (fd < 0) {
         int e = errno;
         XBOX_TRACE(XBOX_LOG_FILE, "NtCreateFile FAILED: %s (errno=%d)", host_path, e);
         if (IoStatusBlock) {
@@ -1435,12 +1451,14 @@ NTSTATUS __stdcall xbox_NtQueryInformationFile(
                                      FileInformation, FileInformationClass);
 
     int fd = w32_handle_fd(FileHandle);
-    if (fd < 0)
+    const char *fpath = w32_handle_path(FileHandle);
+    if (fd < 0 && !fpath)
         return STATUS_INVALID_HANDLE;
 
     struct stat st;
     if (FileInformationClass != XboxFilePositionInformation) {
-        if (fstat(fd, &st) != 0)
+        /* A directory handle has only its path (see NtCreateFile). */
+        if (fd >= 0 ? fstat(fd, &st) != 0 : stat(fpath, &st) != 0)
             return STATUS_UNSUCCESSFUL;
     }
 
