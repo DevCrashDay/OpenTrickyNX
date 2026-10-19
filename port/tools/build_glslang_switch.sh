@@ -26,8 +26,8 @@ REL_PREFIX="${PREFIX#"$ROOT"/}"
 OPTS="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DENABLE_OPT=OFF \
     -DGLSLANG_TESTS=OFF -DENABLE_GLSLANG_BINARIES=OFF -DENABLE_SPVREMAPPER=OFF \
     -DENABLE_HLSL=OFF -DGLSLANG_ENABLE_INSTALL=ON"
-if [ -n "${DEVKITPRO:-}" ]; then
-    CMAKE="$DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake"
+CMAKE="${DEVKITPRO:-/nonexistent}/portlibs/switch/bin/aarch64-none-elf-cmake"
+if [ -n "${DEVKITPRO:-}" ] && [ -f "$CMAKE" ]; then
     $CMAKE -S "$SRC" -B build/glslang-build $OPTS -DCMAKE_INSTALL_PREFIX="$PREFIX"
     cmake --build build/glslang-build -j "$(nproc 2>/dev/null || echo 4)"
     cmake --install build/glslang-build

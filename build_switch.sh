@@ -69,7 +69,12 @@ command -v objdump >/dev/null 2>&1 || {
     fi
     exit 1
 }
-if [ -z "${DEVKITPRO:-}" ] && ! command -v docker >/dev/null 2>&1; then
+# devkitPro's own Windows installer sets DEVKITPRO without the Switch CMake
+# wrapper: build natively only when that is really there, otherwise in Docker.
+SWITCH_CMAKE="${DEVKITPRO:-/nonexistent}/portlibs/switch/bin/aarch64-none-elf-cmake"
+NATIVE=0
+[ -n "${DEVKITPRO:-}" ] && [ -f "$SWITCH_CMAKE" ] && NATIVE=1
+if [ "$NATIVE" = 0 ] && ! command -v docker >/dev/null 2>&1; then
     echo "Needs Docker (for the devkitpro/devkita64 image) or an installed devkitPro (DEVKITPRO=...)."
     exit 1
 fi
@@ -120,7 +125,7 @@ VK_ARGS=""
 DOCKER_VK=()
 if [ "$VULKAN" = 1 ]; then
     BUILD=port/build-switch-vk
-    if [ -n "${DEVKITPRO:-}" ]; then
+    if [ "$NATIVE" = 1 ]; then
         VK_ARGS="-DXBOX_VULKAN=ON -DNVK_SDK=$NVK_SDK -DGLSLANG_DIR=$GLSLANG_DIR"
     else
         # the two prefixes, mounted read-only into the container
@@ -141,13 +146,13 @@ if grep -q "^CMAKE_C_FLAGS:STRING=-ffile-prefix-map" "$BUILD/CMakeCache.txt" 2>/
 fi
 # The Docker build needs a folder configured in Docker (at /src): CMake
 # refuses one configured anywhere else, so start it again.
-if [ -z "${DEVKITPRO:-}" ] && [ -f "$BUILD/CMakeCache.txt" ] &&
+if [ "$NATIVE" = 0 ] && [ -f "$BUILD/CMakeCache.txt" ] &&
    ! grep -qxF "CMAKE_CACHEFILE_DIR:INTERNAL=/src/$BUILD" "$BUILD/CMakeCache.txt"; then
     echo "   $BUILD was configured elsewhere: configuring it again"
     rm -rf "$BUILD"
 fi
-if [ -n "${DEVKITPRO:-}" ]; then
-    CMAKE="$DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-cmake"
+if [ "$NATIVE" = 1 ]; then
+    CMAKE="$SWITCH_CMAKE"
     [ -f "$BUILD/CMakeCache.txt" ] || eval "${CONFIGURE/cmake/$CMAKE}"
     cmake --build "$BUILD" -j "$(nproc 2>/dev/null || echo 4)"
 else
