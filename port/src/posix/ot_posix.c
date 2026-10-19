@@ -8,6 +8,7 @@
 #include <string.h>
 #include <errno.h>
 #include <dirent.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -621,28 +622,60 @@ UINT MapVirtualKeyW(UINT code, UINT type) { (void)code; (void)type; return 0; }
 
 /* ── Start ─────────────────────────────────────────────────────────── */
 
+#ifdef __SWITCH__
+/* An abort (a failed check, a stub, the C library giving up) would otherwise
+ * just drop back to the Homebrew Menu: say so on screen first. */
+static void on_abort(int sig)
+{
+    (void)sig;
+    fprintf(stderr, "\n[SSX Tricky] stopped (abort)\n");
+    fflush(stderr);
+    MessageBoxA(NULL, "The game stopped with an error.\n\n"
+                "SSX Tricky.log, in the same folder as the game, says where.", "SSX Tricky", MB_ICONERROR);
+    signal(SIGABRT, SIG_DFL);
+    _exit(1);
+}
+#endif
+
+static void on_exit_log(void) { printf("[SSX Tricky] exit\n"); }
+
 void ot_host_init(void)
 {
 #ifdef __SWITCH__
+    /* Output to a PC when started with nxlink (nxlink -s); otherwise to
+     * "SSX Tricky.log" beside the game from the very start, unbuffered, so a
+     * run that stops early still leaves a trace. LogFile=1 in settings.ini
+     * later reopens the same file. */
+    if (__nxlink_host.s_addr) {
+        socketInitializeDefault();
+        nxlinkStdio();
+    } else {
+        char dir[1024], path[1100];
+        if (ot_exe_dir(dir, sizeof dir)) {
+            snprintf(path, sizeof path, "%s%sSSX Tricky.log", dir, dir[strlen(dir) - 1] == '/' ? "" : "/");
+            if (freopen(path, "w", stdout)) {
+                setvbuf(stdout, NULL, _IONBF, 0);
+                if (freopen(path, "a", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+            }
+        }
+    }
+    printf("SSX Tricky (OpenTrickyNX) starting: %s\n", s_argc > 0 ? s_argv[0] : "?");
+    signal(SIGABRT, on_abort);
+    atexit(on_exit_log);
+
     /* Started from the album, homebrew gets a few hundred MB at most: not
      * enough for the Xbox's memory plus the GPU's and the textures. */
     {
         AppletType t = appletGetAppletType();
+        printf("applet type %d\n", (int)t);
         if (t != AppletType_Application && t != AppletType_SystemApplication) {
-            ErrorApplicationConfig c;
-            if (R_SUCCEEDED(errorApplicationCreate(&c, "SSX Tricky needs more memory than the album gives.",
-                    "Start the Homebrew Menu over a game (hold R while starting any game), "
-                    "then start SSX Tricky from it.")))
-                errorApplicationShow(&c);
+            MessageBoxA(NULL, "SSX Tricky needs more memory than the album gives.\n\n"
+                        "  Start the Homebrew Menu over a game: hold R while starting any\n"
+                        "  installed game, then start SSX Tricky from it.", "SSX Tricky", MB_ICONERROR);
             exit(1);
         }
     }
     romfsInit();
-    /* Output to a PC when started with nxlink (nxlink -s). */
-    if (__nxlink_host.s_addr) {
-        socketInitializeDefault();
-        nxlinkStdio();
-    }
 #endif
     ot_pad_init();
 }

@@ -60,7 +60,7 @@ All in `sdmc:/switch/opentricky/`:
 |---|---|
 | `SSX Tricky.nro` | The game. |
 | `*.iso` | Your disc image. The game reads it in place; nothing is extracted. |
-| `settings.ini` | Optional: the settings, the same file as on Windows. Not created by the game; write only the lines you change, under their section, e.g. `[Advanced]` then `LogFile=1`. |
+| `settings.ini` | Optional: the settings, the same file as on Windows. Not created by the game; write only the lines you change, under their section, e.g. `[Display]` then the key. |
 | `Saves/` | Saved games (the Xbox hard disk's save area). |
 
 ## Controls
@@ -82,7 +82,7 @@ later.
 - **A message says the disc image is missing**: put the `.iso` in `sdmc:/switch/opentricky/`, or give its full
   path (`sdmc:/...`) as `DiscImage` in `settings.ini`.
 - **The log**: start it with `nxlink -s "SSX Tricky.nro"` from a computer on the same network to see what it
-  prints, or set `LogFile=1` in `settings.ini` for a log file beside it.
+  prints, or read `SSX Tricky.log`, which the game always writes beside the `.nro`.
 
 ## Building on Linux
 

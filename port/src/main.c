@@ -1624,5 +1624,13 @@ int main(int argc, char **argv)
 
     (void)argc;
     (void)argv;
+#ifdef __SWITCH__
+    {
+        int rc = WinMain(GetModuleHandle(NULL), NULL, GetCommandLineA(), SW_SHOW);
+        printf("The game returned %d\n", rc);
+        return rc;
+    }
+#else
     return WinMain(GetModuleHandle(NULL), NULL, GetCommandLineA(), SW_SHOW);
+#endif
 }

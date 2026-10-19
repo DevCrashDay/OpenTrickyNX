@@ -113,7 +113,7 @@ Joy-Cons (attached or held together), a Pro Controller or a single Joy-Con held 
 | **Possible hitches** | The first time an effect appears, its shader is compiled, which may cause a short hitch. |
 
 Please report what you see in [Issues](https://github.com/DevCrashDay/OpenTrickyNX/issues): what you did, what happened, and the output of
-`nxlink -s "SSX Tricky.nro"` if you can get it (or `LogFile=1` in `settings.ini`).
+`nxlink -s "SSX Tricky.nro"` if you can get it (or `SSX Tricky.log`, which the game always writes beside itself).
 
 ## Other platforms
 
