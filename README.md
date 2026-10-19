@@ -1,10 +1,10 @@
-<a href="https://opentricky.com"><img width="1280" height="320" alt="OpenTricky" src="https://github.com/user-attachments/assets/eb23ea38-f97d-43a1-b22c-e58a80f90aa7" /></a>
+<h1 align="center"><img width="500" height="500" alt="cover" src="https://github.com/user-attachments/assets/34789fa2-801a-4760-847c-a6e37ff9bf13" /></h1>
 
-<h1 align="center">OpenTricky</h1>
+<h1 align="center">OpenTricky Switch Edition</h1>
 
 <p align="center">
-  <b>The PC port SSX Tricky never got.</b><br>
-  Built from the original game, with its features restored, and everything a modern PC release would have: today's controllers, new visual options, ultrawide, high frame rates and a real launcher.
+  <b>The Switch port SSX Tricky never got.</b><br>
+  Built from the original xbox game, with its features restored, and everything a modern switch release would have.
 </p>
 
 <p align="center">
