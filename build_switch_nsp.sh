@@ -59,6 +59,10 @@ else
 fi
 
 echo "== [2/2] the .nsp"
+# MSYS2 paths (/c/...) as Windows ones, for Windows Python
+if [ "$ON_WINDOWS" = 1 ]; then
+    KEYS="$(cygpath -m "$KEYS")"; COVER="$(cygpath -m "$COVER")"
+fi
 mkdir -p dist/switch
 "$PY" port/tools/switch/make_forwarder.py --keys "$KEYS" --cover "$COVER" \
     --nso "$OUT/forwarder.nso" --npdm "$OUT/forwarder.npdm" --out "dist/switch/SSX Tricky.nsp"
