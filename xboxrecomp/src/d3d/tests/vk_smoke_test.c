@@ -263,12 +263,35 @@ int main(int argc, char **argv)
             d.raster = 0x01;
             if (!d3d8_nv2a_vsh_ready(&d)) { printf("FAIL vertex program not ready\n"); fails++; }
             else if (!d3d8_nv2a_draw_program_gpu(&d)) { printf("FAIL vertex program draw\n"); fails++; }
+
+            /* the same program over two points, indexed out of order: 40-pixel
+             * squares, drawn as instances */
+            {
+                static struct { float x, y, z, w; DWORD c; } pt[2] = {
+                    { 64, 240, 8000000, 1, 0xFF20C040u }, { 576, 288, 8000000, 1, 0xFFC02060u },
+                };
+                static const uint32_t ptidx[2] = { 1, 0 };
+                d.attr[0].base = (const uint8_t *)&pt[0].x; d.attr[0].bytes = sizeof pt;
+                d.attr[3].base = (const uint8_t *)&pt[0].c; d.attr[3].bytes = sizeof pt - 16;
+                d.topology = D3DPT_POINTLIST;
+                d.indices = ptidx; d.nindices = 2;
+                d.point_size = 40.0f; d.point_kx = 1.0f;
+                if (!d3d8_nv2a_vsh_ready(&d)) { printf("FAIL points not ready\n"); fails++; }
+                else if (!d3d8_nv2a_draw_program_gpu(&d)) { printf("FAIL points draw\n"); fails++; }
+            }
         }
 
         if (frame == 2) {
             expect("dxt1 texture", 0.9f, 0.05f, 0x00FF00, 2);
             expect("transformed indexed", 0.6f, 0.4f, 0x800080, 2);
             expect("vertex program", 0.39f, 0.73f, 0x00FFFF, 2);
+            expect("point sprite a", 0.1f + 15.0f / 640.0f, 0.5f - 15.0f / 480.0f, 0x20C040, 2);
+            expect("point sprite b", 0.9f - 15.0f / 640.0f, 0.6f + 15.0f / 480.0f, 0xC02060, 2);
+            {   /* and no wider than its 40 pixels */
+                unsigned got = d3d8_DebugPeekScene(0.1f + 23.0f / 640.0f, 0.5f) | 0xFF000000u;
+                if (near(got, 0xFF20C040u, 2)) { printf("FAIL point sprite a too wide\n"); fails++; }
+                else printf("ok   point sprite a size\n");
+            }
             expect("depth-nearer quad", 0.05f, 0.05f, 0xFFFF00, 2);
             expect("ffp quad", 0.4f, 0.4f, 0x00FF00, 2);
             expect("texture left texel", 0.55f, 0.2f, 0xFF0000, 2);

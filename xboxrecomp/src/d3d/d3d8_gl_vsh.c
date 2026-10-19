@@ -8,7 +8,10 @@
  * in the language: bit casts are floatBitsToUint / uintBitsToFloat, constants
  * and parameters are std140 blocks, D3D's z in [0, w] becomes GL's [-w, w],
  * and the outputs are the NvVary block the pixel shaders of nv2a_psh.c read.
- * Point sprites stay on the CPU path here (no geometry shader).
+ * Point sprites: nv2a_vsh_glsl_points builds, for the Vulkan backend, a
+ * shader that draws each point as an instance of six vertices (two
+ * triangles), its attributes read once per instance; the OpenGL backend
+ * keeps them on the CPU path.
  */
 #include "d3d8_nv2a_vsh.h"
 #include <stdarg.h>
@@ -17,6 +20,8 @@
 
 int nv2a_vsh_glsl(const vshcpu_insn *p, int n, uint16_t inputs, const uint8_t kind[16],
                   char *buf, int cap);
+int nv2a_vsh_glsl_points(const vshcpu_insn *p, int n, uint16_t inputs, const uint8_t kind[16],
+                         int points, char *buf, int cap);
 
 enum { MAC_NOP, MAC_MOV, MAC_MUL, MAC_ADD, MAC_MAD, MAC_DP3, MAC_DPH, MAC_DP4,
        MAC_DST, MAC_MIN, MAC_MAX, MAC_SLT, MAC_SGE, MAC_ARL };
@@ -125,6 +130,17 @@ static const char g_prelude[] =
 
 int nv2a_vsh_glsl(const vshcpu_insn *p, int n, uint16_t inputs, const uint8_t kind[16],
                   char *buf, int cap)
+{
+    return nv2a_vsh_glsl_points(p, n, inputs, kind, 0, buf, cap);
+}
+
+/* points != 0 (Vulkan only, gl_VertexIndex): the square of the HLSL
+ * points geometry shader (d3d8_nv2a.c, g_gs_src), corner by corner --
+ * centre snapped and HUD-placed as any vertex, half size from oPts or the
+ * fixed size, x stretched by ptparm.w, triangles 0 1 2 and 2 1 3, the
+ * sprite coordinate in t3 under SET_POINT_SMOOTH_ENABLE. */
+int nv2a_vsh_glsl_points(const vshcpu_insn *p, int n, uint16_t inputs, const uint8_t kind[16],
+                         int points, char *buf, int cap)
 {
     Sb b = { buf, buf + cap, 0 };
     int k, a;
@@ -244,7 +260,16 @@ int nv2a_vsh_glsl(const vshcpu_insn *p, int n, uint16_t inputs, const uint8_t ki
     sb(&b,
        "    float x = trunc(O0.x * 16.0) / 16.0, y = trunc(O0.y * 16.0) / 16.0;\n"
        "    if (hud.x > 0.0) { x = hud.y + (x - hud.y) * hud.x; y = hud.w + (y - hud.w) * hud.z; }\n"
-       "    else if (hud.x < 0.0) x = x <= hud.z ? 0.0 : x >= hud.w ? screen.x : hud.y - (x - hud.y) * hud.x;\n"
+       "    else if (hud.x < 0.0) x = x <= hud.z ? 0.0 : x >= hud.w ? screen.x : hud.y - (x - hud.y) * hud.x;\n");
+    if (points)
+        sb(&b,
+       "    int nvc = (0x312210 >> (4 * (gl_VertexIndex %% 6))) & 3;\n"
+       "    float ps = ptparm.x != 0.0 ? O6.x * screen.w : ptparm.y;\n"
+       "    if (!(ps >= 1.0)) ps = 1.0;\n"
+       "    if (ps > 2048.0) ps = 2048.0;\n"
+       "    x += ((nvc & 1) != 0 ? ps * 0.5 : -ps * 0.5) * ptparm.w;\n"
+       "    y += (nvc & 2) != 0 ? ps * 0.5 : -ps * 0.5;\n");
+    sb(&b,
        "    float z = screen.z > 0.0 ? O0.z / screen.z : O0.z;\n"
        "    float w = O0.w;\n"
        "    if (w >= 0.0) w = clamp(w, 5.421011e-20, 1.8446744e19); else w = clamp(w, -1.8446744e19, -5.421011e-20);\n"
@@ -258,7 +283,9 @@ int nv2a_vsh_glsl(const vshcpu_insn *p, int n, uint16_t inputs, const uint8_t ki
        "    if (flags.x == 0.0) o.d1 = vec4(0.0, 0.0, 0.0, 1.0);\n"
        "    else if (flags.y == 0.0) o.d1.w = 1.0;\n"
        "    o.fog = fogf(O5.x);\n"
-       "    o.t0 = O9; o.t1 = O10; o.t2 = O11; o.t3 = O12;\n"
-       "}\n");
+       "    o.t0 = O9; o.t1 = O10; o.t2 = O11; o.t3 = O12;\n");
+    if (points)
+        sb(&b, "    if (ptparm.z != 0.0) o.t3 = vec4((nvc & 1) != 0 ? 1.0 : 0.0, (nvc & 2) != 0 ? 1.0 : 0.0, 1.0, 1.0);\n");
+    sb(&b, "}\n");
     return b.overflow ? -1 : (int)(b.p - buf);
 }

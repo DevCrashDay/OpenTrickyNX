@@ -491,6 +491,7 @@ static void vl_apply(VkCommandBuffer cb, const VtxLayout *l)
     for (i = 0; i < l->nb; i++) {
         h = (h ^ l->b[i].binding) * 1099511628211ull;
         h = (h ^ l->b[i].stride) * 1099511628211ull;
+        h = (h ^ (unsigned long long)l->b[i].inputRate) * 1099511628211ull;
     }
     for (i = 0; i < l->na; i++) {
         h = (h ^ (l->a[i].location | (l->a[i].binding << 8))) * 1099511628211ull;
@@ -1401,12 +1402,13 @@ HRESULT d3d8_nv2a_draw(D3DPRIMITIVETYPE prim, UINT prim_count, const void *verts
  * title's vertex arrays; the program becomes a vertex shader (d3d8_gl_vsh.c
  * GLSL), cached by program and input kinds, drawn with the draw's combiner
  * pixel shader. Its 192 constants and per-draw parameters are uniform
- * blocks at bindings 1 and 2 (the pixel constants keep 0). Points answer 0
- * here and stay on the CPU path, as does any program whose shader does not
- * compile.
+ * blocks at bindings 1 and 2 (the pixel constants keep 0). A point list is
+ * drawn as one instance of six vertices (two triangles) per point, its
+ * attributes gathered in draw order and read per instance; a program whose
+ * shader does not compile stays on the CPU path.
  * ================================================================ */
-int nv2a_vsh_glsl(const vshcpu_insn *p, int n, uint16_t inputs, const uint8_t kind[16],
-                  char *buf, int cap);
+int nv2a_vsh_glsl_points(const vshcpu_insn *p, int n, uint16_t inputs, const uint8_t kind[16],
+                         int points, char *buf, int cap);
 
 #define VP_CACHE 1024
 #define VP_SLOTS (VP_CACHE * 2)
@@ -1416,7 +1418,7 @@ static float s_vp_c[192][4];
 static int s_vp_c_valid;
 static UbRef s_vp_c_ref;                        /* where s_vp_c sits in the ring */
 static unsigned s_vp_c_gen;                     /* ...and the ring's generation then */
-static struct { unsigned long long hash; uint8_t kind[16]; int slot; } s_vp_last = { 0, { 0 }, -1 };
+static struct { unsigned long long hash; uint8_t kind[16]; int points, slot; } s_vp_last = { 0, { 0 }, 0, -1 };
 
 static void vp_shutdown(void)
 {
@@ -1448,13 +1450,15 @@ static VkShaderModule vp_shader(const Nv2aVshDraw *d)
     uint8_t kind[16];
     unsigned long long key;
     unsigned h;
-    int a, n, len;
+    int a, n, len, points = d->topology == D3DPT_POINTLIST;
     Uint64 t0;
 
     for (a = 0; a < 16; a++) kind[a] = (d->inputs & (1u << a)) ? d->attr[a].kind : 0xFF;
-    if (s_vp_last.slot >= 0 && s_vp_last.hash == d->prog_hash && !memcmp(s_vp_last.kind, kind, 16))
+    if (s_vp_last.slot >= 0 && s_vp_last.hash == d->prog_hash && s_vp_last.points == points &&
+        !memcmp(s_vp_last.kind, kind, 16))
         return s_vp[s_vp_last.slot].vs;
     key = vp_fnv(d->prog_hash, kind, 16);
+    if (points) key = vp_fnv(key, "pts", 3);
     h = vp_hash(key, VP_SLOTS - 1);
     for (n = 0; n < VP_SLOTS; n++, h = (h + 1) & (VP_SLOTS - 1)) {
         if (!s_vp[h].used) break;
@@ -1465,7 +1469,7 @@ static VkShaderModule vp_shader(const Nv2aVshDraw *d)
     s_vp[h].used = 1;
     s_vp[h].vs = VK_NULL_HANDLE;
     s_nvp++;
-    len = nv2a_vsh_glsl(d->prog, d->prog_len, d->inputs, kind, src, (int)sizeof src);
+    len = nv2a_vsh_glsl_points(d->prog, d->prog_len, d->inputs, kind, points, src, (int)sizeof src);
     if (len > 0) {
         t0 = SDL_GetPerformanceCounter();
         s_vp[h].vs = vkd_shader_glsl(0, src, len, "nv2a vertex program");
@@ -1479,6 +1483,7 @@ static VkShaderModule vp_shader(const Nv2aVshDraw *d)
     }
 found:
     s_vp_last.hash = d->prog_hash;
+    s_vp_last.points = points;
     memcpy(s_vp_last.kind, kind, 16);
     s_vp_last.slot = (int)h;
     return s_vp[h].vs;
@@ -1490,7 +1495,7 @@ int d3d8_nv2a_vsh_ready(const Nv2aVshDraw *d)
 {
     int a;
     if (!g_vkd.initialized || !vkd_on_render_thread() || !s_nv_vs_m) return 0;
-    if (d->topology == D3DPT_POINTLIST) return 0;
+    if (d->topology == D3DPT_POINTLIST && !d3d8_points_gpu_on()) return 0;
     for (a = 0; a < 16; a++)
         if ((d->inputs & (1u << a)) && (d->attr[a].kind & 0x0F) != NV2A_VSH_IN_CONST &&
             !vp_format_ok(d->attr[a].dxgi_format))
@@ -1500,7 +1505,7 @@ int d3d8_nv2a_vsh_ready(const Nv2aVshDraw *d)
 
 int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
 {
-    struct { const uint8_t *base; uint32_t stride, size; VkBuffer buf; VkDeviceSize off; } grp[16];
+    struct { const uint8_t *base; uint32_t stride, size, gsize; VkBuffer buf; VkDeviceSize off; } grp[16];
     int gi[16];
     struct { float screen[4], fog[4], flags[4], vattr[16][4], point[4], hud[4]; } params;
     int slot = ps_slot(d->ps_key, 0);
@@ -1514,13 +1519,14 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     VtxLayout vl;
     VkPipeline pipe;
     VkCommandBuffer cb;
-    VkBuffer ibuf;
-    VkDeviceSize ioff;
+    VkBuffer ibuf = VK_NULL_HANDLE;
+    VkDeviceSize ioff = 0;
     UbRef ub[3];
     void *p;
     size_t total = 0, al = (size_t)vkd_ub_align();
     double pt = 0.0;                    /* XBOX_PERF sub-zones */
     static const float pc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    int points = d->topology == D3DPT_POINTLIST;
 
     if (!g_vkd.initialized || !vkd_on_render_thread() || slot < 0 || !s_ps[slot].fs || !d->nindices)
         return 0;
@@ -1529,6 +1535,7 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     case D3DPT_TRIANGLELIST: topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; k.topo = VKD_TOPO_TRI;  break;
     case D3DPT_LINELIST:     topo = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;     k.topo = VKD_TOPO_LINE; break;
     case D3DPT_LINESTRIP:    topo = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;    k.topo = VKD_TOPO_LINE; break;
+    case D3DPT_POINTLIST:    topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; k.topo = VKD_TOPO_TRI;  break;
     default: return 0;
     }
     if (!(vs = vp_shader(d))) return 0;
@@ -1572,19 +1579,36 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     if (!(pipe = vkd_pipeline(&k))) return 0;
     stage_textures(&tb);
 
+    /* Points: each array gathered in draw order, one element per point. */
+    if (points)
+        for (g = 0; g < ngrp; g++)
+            if (grp[g].stride) grp[g].gsize = d->nindices * grp[g].stride;
     /* ring space for all of this draw, so no allocation is flushed away */
-    for (g = 0; g < ngrp; g++) total += ((size_t)grp[g].size + 15u) & ~(size_t)15u;
+    for (g = 0; g < ngrp; g++) total += ((size_t)(points && grp[g].stride ? grp[g].gsize : grp[g].size) + 15u) & ~(size_t)15u;
     if (total + 16 > vkd_ring_cap(VKD_RING_VB)) return 0;
     if (!vkd_ring_need(VKD_RING_VB, total + 16, 16) ||
         !vkd_ring_need(VKD_RING_IB, (size_t)d->nindices * 4 + 16, 4) ||
         !vkd_ring_need(VKD_RING_UB, ub_pad(sizeof params) + ub_pad(PSH_UB) + ub_pad(sizeof s_vp_c) + al, al))
         return 0;
     for (g = 0; g < ngrp; g++) {
+        if (points && grp[g].stride) {
+            uint32_t j, st = grp[g].stride;
+            uint8_t *o;
+            if (!vkd_ring_alloc(VKD_RING_VB, grp[g].gsize, 16, &grp[g].buf, &grp[g].off, &p)) return 0;
+            for (j = 0, o = (uint8_t *)p; j < d->nindices; j++, o += st) {
+                uint32_t at = d->indices[j] * st;
+                memcpy(o, grp[g].base + at, at + st <= grp[g].size ? st : grp[g].size - at);
+            }
+            continue;
+        }
         if (!vkd_ring_alloc(VKD_RING_VB, grp[g].size ? grp[g].size : 16, 16, &grp[g].buf, &grp[g].off, &p)) return 0;
         memcpy(p, grp[g].base, grp[g].size);
     }
     memset(&vl, 0, sizeof vl);
-    for (g = 0; g < ngrp; g++) vl_binding(&vl, (uint32_t)g, grp[g].stride);
+    for (g = 0; g < ngrp; g++) {
+        vl_binding(&vl, (uint32_t)g, grp[g].stride);
+        if (points) vl.b[vl.nb - 1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+    }
     for (a = 0; a < 16; a++) {
         if (!(d->inputs & (1u << a)) || (d->attr[a].kind & 0x0F) == NV2A_VSH_IN_CONST) continue;
         if (!vp_format_ok(d->attr[a].dxgi_format)) return 0;
@@ -1592,8 +1616,10 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
         vl_attr(&vl, (uint32_t)a, (uint32_t)g, vp_vkformat(d->attr[a].dxgi_format),
                 (uint32_t)(d->attr[a].base - grp[g].base));
     }
-    if (!vkd_ring_alloc(VKD_RING_IB, (size_t)d->nindices * 4, 4, &ibuf, &ioff, &p)) return 0;
-    memcpy(p, d->indices, (size_t)d->nindices * 4);
+    if (!points) {
+        if (!vkd_ring_alloc(VKD_RING_IB, (size_t)d->nindices * 4, 4, &ibuf, &ioff, &p)) return 0;
+        memcpy(p, d->indices, (size_t)d->nindices * 4);
+    }
     if (g_perf_on) { double t = perf_now(); perf_add(PZ_DUP, t - pt); pt = t; }
 
     /* constants: uploaded again only when they changed or the ring started over */
@@ -1621,6 +1647,10 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     params.hud[1] = d->hud_ax;
     params.hud[2] = d->hud_ky;
     params.hud[3] = d->hud_ay;
+    params.point[0] = d->point_params ? 1.0f : 0.0f;
+    params.point[1] = d->point_size;
+    params.point[2] = d->point_smooth ? 1.0f : 0.0f;
+    params.point[3] = d->point_kx;
     if (d->attr_const) memcpy(params.vattr, d->attr_const, sizeof params.vattr);
     if (!ub_put(&params, sizeof params, sizeof params, &ub[2]) ||
         !ub_put(d->ps_consts, d->ps_consts_size, PSH_UB, &ub[0]))
@@ -1632,19 +1662,27 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     bind_pipeline(cb, pipe);
     vl_apply(cb, &vl);
     for (g = 0; g < ngrp; g++) vkCmdBindVertexBuffers(cb, (uint32_t)g, 1, &grp[g].buf, &grp[g].off);
-    vkCmdBindIndexBuffer(cb, ibuf, ioff, VK_INDEX_TYPE_UINT32);
+    if (!points) vkCmdBindIndexBuffer(cb, ibuf, ioff, VK_INDEX_TYPE_UINT32);
     push_set(cb, ub, &tb);
     push_consts(cb, pc);
     if (g_perf_on) { double t = perf_now(); perf_add(PZ_DSTATE, t - pt); pt = t; }
     if (g_gpuprof_on) gpuprof_draw_begin();
-    vkCmdDrawIndexed(cb, d->nindices, 1, 0, 0, 0);
+    if (points) vkCmdDraw(cb, 6, d->nindices, 0, 0);
+    else        vkCmdDrawIndexed(cb, d->nindices, 1, 0, 0, 0);
     if (g_gpuprof_on) gpuprof_draw_end();
     if (g_perf_on) { perf_add(PZ_DDRAW, perf_now() - pt); perf_gpu_draw(0, (unsigned)ngrp); }
     return 1;
 }
 
-int d3d8_points_gpu_on(void) { return 0; }       /* point sprites from the CPU path */
-int d3d8_points_check_on(void) { return 0; }     /* diagnostic of the GPU point path */
+/* Point sprites on the GPU (instanced squares, above); XBOX_FIX_POINTS_GPU=0
+ * puts them back on the CPU path. */
+int d3d8_points_gpu_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("XBOX_FIX_POINTS_GPU"); on = !(e && e[0] == '0'); }
+    return on;
+}
+int d3d8_points_check_on(void) { return 0; }     /* diagnostic of the D3D11 point path */
 void d3d8_nv2a_points_expect(const void *verts, unsigned n, unsigned stride)
 { (void)verts; (void)n; (void)stride; }
 
