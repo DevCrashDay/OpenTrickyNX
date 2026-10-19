@@ -111,7 +111,7 @@ build_switch.bat "C:\path\to\SSX Tricky (USA).iso"
 ```
 
 The first Vulkan build also compiles glslang for the Switch into `build/glslang-switch/` (or set `GLSLANG_DIR` to
-one you built). `NVK_SDK` is an install of mesa-switch built with NVK (`include/vulkan/`, `lib/libvulkan_nouveau.a`). The build goes
+one you built). `NVK_SDK` is an install of mesa-switch built with NVK (`include/vulkan/`, `lib/libvulkan.a`): download the `mesa-switch-nvk-sdk` artifact of this repository's latest "Mesa NVK SDK" run on GitHub (Actions tab), unzip it, and use its `portlibs/switch` folder. The build goes
 to `port/build-switch-vk/`. Shaders are compiled on the console the first time they are needed; the driver keeps
 the compiled pipelines in `vk_pipeline.cache` beside the `.nro`, so the first race of each kind stutters and later
 ones do not. SMAA, soft shadows and the post chain are not in the Vulkan renderer.

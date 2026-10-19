@@ -13,7 +13,9 @@
 #
 # VULKAN=1 builds the Vulkan renderer (NVK, as flatout2-sw / fo2x) instead of
 # OpenGL, in port/build-switch-vk/. It needs two install prefixes:
-#   NVK_SDK      mesa-switch built with NVK (include/vulkan, lib/libvulkan_nouveau.a)
+#   NVK_SDK      mesa-switch built with NVK (include/vulkan, lib/libvulkan.a): the
+#                portlibs/switch folder of the "mesa-switch-nvk-sdk" download
+#                from this repository's "Mesa NVK SDK" GitHub Actions run
 #   GLSLANG_DIR  glslang built for the Switch (port/tools/build_glslang_switch.sh;
 #                built into build/glslang-switch on first use when not set)
 #
@@ -84,7 +86,8 @@ if [ "$VULKAN" = 1 ]; then
         GLSLANG_DIR="$ROOT/build/glslang-switch"
         [ -f "$GLSLANG_DIR/lib/libglslang.a" ] || bash port/tools/build_glslang_switch.sh build/glslang-switch
     fi
-    [ -f "$NVK_SDK/lib/libvulkan_nouveau.a" ] || { echo "No lib/libvulkan_nouveau.a in NVK_SDK=$NVK_SDK"; exit 1; }
+    [ -f "$NVK_SDK/lib/libvulkan.a" ] || [ -f "$NVK_SDK/lib/libvulkan_nouveau.a" ] ||
+        { echo "No lib/libvulkan.a in NVK_SDK=$NVK_SDK"; exit 1; }
     [ -f "$GLSLANG_DIR/lib/libglslang.a" ] || { echo "No lib/libglslang.a in GLSLANG_DIR=$GLSLANG_DIR (port/tools/build_glslang_switch.sh builds it)"; exit 1; }
 fi
 

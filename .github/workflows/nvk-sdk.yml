@@ -1,0 +1,225 @@
+# Mesa NVK SDK for the Vulkan renderer on the Switch (build_switch.sh VULKAN=1).
+#
+# Builds danfromtico/mesa-switch (Mesa with a Horizon backend: loaderless NVK
+# and VK_NN_vi_surface) for Vulkan only, following that repository's own CI,
+# and uploads it as the "mesa-switch-nvk-sdk" artifact: unzip it and point
+# NVK_SDK at its portlibs/switch folder. Mesa is MIT licensed; nothing of the
+# game is in it. Then checks that the Vulkan .nro builds against it (with the
+# stubs in place of the game, as switch.yml does).
+
+name: Mesa NVK SDK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, switch-port]
+    paths:
+      - .github/workflows/nvk-sdk.yml
+      - xboxrecomp/src/d3d/d3d8_vk_*
+      - xboxrecomp/src/d3d/CMakeLists.txt
+      - port/tools/build_glslang_switch.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MESA_REPO: https://github.com/danfromtico/mesa-switch.git
+  MESA_REV: 0ff52079ca9e9e837ed27eb95a8d239f439a1864
+  DEVKITPRO: /opt/devkitpro
+  DEVKITA64: /opt/devkitpro/devkitA64
+  MESA_SWITCH_RUST_TARGET: aarch64-unknown-linux-gnu
+  SPIRV_TAG: vulkan-sdk-1.3.290.0
+  SPIRV_PREFIX: /opt/spirv-tools
+  CARGO_HOME: /root/.cargo
+  RUSTUP_HOME: /root/.rustup
+  LC_ALL: C
+  TZ: UTC
+
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    container:
+      image: devkitpro/devkita64:latest
+      options: --user root
+    steps:
+      - name: Cached SDK
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: /sdk
+          key: mesa-switch-nvk-${{ env.MESA_REV }}-v1
+
+      - name: Host packages
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config flex bison curl ca-certificates git xz-utils \
+            clang libclang-dev llvm-15-dev libclang-15-dev libclang-common-15-dev \
+            libclc-15-dev libllvmspirvlib-15-dev python3-pip python3-setuptools python3-wheel
+          pip3 install --break-system-packages --no-cache-dir meson mako pyyaml packaging
+
+      - name: Switch portlibs
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          if dkp-pacman -Q switch-mesa >/dev/null 2>&1; then dkp-pacman -Rdd --noconfirm switch-mesa; fi
+          dkp-pacman -S --noconfirm --needed switch-pkg-config switch-zlib switch-libzstd \
+            switch-libexpat switch-libdrm_nouveau
+          dkp-pacman -S --noconfirm --needed switch-libelf || echo "no switch-libelf package"
+
+      - name: Mesa source
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          git init /mesa
+          cd /mesa
+          git remote add origin "$MESA_REPO"
+          git fetch --depth 1 origin "$MESA_REV"
+          git checkout FETCH_HEAD
+
+      - name: SPIRV-Tools (host)
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$SPIRV_TAG" https://github.com/KhronosGroup/SPIRV-Tools.git /tmp/SPIRV-Tools
+          git clone --depth 1 --branch "$SPIRV_TAG" https://github.com/KhronosGroup/SPIRV-Headers.git \
+            /tmp/SPIRV-Tools/external/spirv-headers
+          cmake -S /tmp/SPIRV-Tools -B /tmp/SPIRV-Tools/build -G Ninja -DCMAKE_INSTALL_PREFIX="$SPIRV_PREFIX" \
+            -DCMAKE_BUILD_TYPE=Release -DSPIRV_SKIP_TESTS=ON
+          cmake --build /tmp/SPIRV-Tools/build
+          cmake --install /tmp/SPIRV-Tools/build
+
+      - name: Rust nightly, bindgen, cbindgen (NAK)
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly --profile minimal
+          . "$CARGO_HOME/env"
+          rustup component add rust-src
+          rustup target add "$MESA_SWITCH_RUST_TARGET"
+          cargo install bindgen-cli cbindgen
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Cross wrappers, headers, POSIX stubs, LLVM 15
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        working-directory: /mesa
+        run: |
+          mkdir -p /usr/local/libexec
+          install -m 755 bindgen-switch-wrapper.sh /usr/local/libexec/bindgen
+          install -m 755 rustc-switch-wrapper.sh /usr/local/libexec/rustc
+          install -m 644 bindgen-atomic-shim.h /usr/local/libexec/bindgen-atomic-shim.h
+          install -m 644 src/nouveau/headers/nv_device_info.h "$DEVKITPRO/portlibs/switch/include/"
+          lib="$DEVKITPRO/portlibs/switch/lib"
+          if [ ! -f "$lib/libdl.a" ]; then
+            echo 'void __mesa_switch_stub_lib(void) {}' > /tmp/stub_posix.c
+            "$DEVKITA64/bin/aarch64-none-elf-gcc" -c /tmp/stub_posix.c -o /tmp/stub_posix.o
+            for l in dl rt util; do "$DEVKITA64/bin/aarch64-none-elf-ar" rcs "$lib/lib$l.a" /tmp/stub_posix.o; done
+          fi
+          llvm_config=/usr/bin/llvm-config-15
+          libdir="$("$llvm_config" --libdir)"; version="$("$llvm_config" --version)"; major="${version%%.*}"
+          [ -e "$libdir/clang/$version" ] || ln -sfn "$major" "$libdir/clang/$version"
+          [ -e "$libdir/clang/$major" ] || ln -sfn "$version" "$libdir/clang/$major"
+          printf "[binaries]\nllvm-config = '%s'\n" "$llvm_config" > /tmp/llvm-native.txt
+
+      - name: Host tools (mesa_clc, vtn_bindgen2)
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        working-directory: /mesa
+        env:
+          PKG_CONFIG_PATH: /opt/spirv-tools/lib/pkgconfig
+          CMAKE_PREFIX_PATH: /opt/spirv-tools
+        run: |
+          meson setup builddir-native --native-file /tmp/llvm-native.txt --buildtype=release \
+            -Dvulkan-drivers= -Dgallium-drivers= -Dshader-cache=enabled -Dplatforms= \
+            -Dglx=disabled -Degl=disabled -Dopengl=false -Dgles1=disabled -Dgles2=disabled \
+            -Dtools=[] -Dllvm=enabled -Dmesa-clc=enabled -Dmesa-clc-bundle-headers=enabled \
+            -Dprecomp-compiler=enabled -Dinstall-mesa-clc=true
+          ninja -C builddir-native src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2
+
+      - name: NVK for the Switch
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        working-directory: /mesa
+        run: |
+          export PATH="/mesa/builddir-native/src/compiler/clc:/mesa/builddir-native/src/compiler/spirv:$PATH"
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" ZERO_AR_DATE=1
+          meson setup builddir-switch --cross-file switch_cross_file.txt --default-library=static \
+            --prefix=/opt/devkitpro/portlibs/switch --libdir=lib --buildtype=release \
+            -Doptimization=2 -Db_lto=false -Db_ndebug=true \
+            -Dvulkan-drivers=nouveau -Dgallium-drivers= -Dgallium-rusticl=false \
+            -Dplatforms=switch -Dglx=disabled -Degl=disabled -Dopengl=false -Dgles1=disabled -Dgles2=disabled \
+            -Dvideo-codecs= -Dshader-cache=enabled -Dxmlconfig=enabled -Dexpat=enabled -Dtools=[] \
+            -Dllvm=disabled -Dshared-glapi=disabled -Dshared-llvm=disabled \
+            -Dmesa-clc=system -Dprecomp-compiler=system -Dcpp_rtti=false -Dbuild-tests=false \
+            -Dnvk-build-id="$MESA_REV"
+          ninja -C builddir-switch
+          meson install -C builddir-switch --destdir /stage
+
+      - name: Stage the SDK
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          src=/stage/opt/devkitpro/portlibs/switch
+          mkdir -p /sdk
+          cp -a "$src" /sdk/
+          sdk=/sdk/switch
+          # the libraries libvulkan.a needs, so the SDK is enough on its own
+          for l in elf expat zstd z; do
+            f="$DEVKITPRO/portlibs/switch/lib/lib$l.a"
+            if [ -f "$f" ]; then cp "$f" "$sdk/lib/"; else echo "lib$l.a not in portlibs"; fi
+          done
+          mkdir -p "$sdk/share/licenses/mesa-switch"
+          cp -a /mesa/licenses/. "$sdk/share/licenses/mesa-switch/" 2>/dev/null || true
+          cp /mesa/docs/license.rst "$sdk/share/licenses/mesa-switch/" 2>/dev/null || true
+          echo "$MESA_REPO $MESA_REV" > "$sdk/MESA_REVISION"
+          mv /sdk/switch /sdk/portlibs-switch && mkdir -p /sdk/portlibs && mv /sdk/portlibs-switch /sdk/portlibs/switch
+          for f in lib/libvulkan.a include/vulkan/vulkan.h include/vulkan/vulkan_vi.h lib/cmake/Vulkan/VulkanConfig.cmake; do
+            test -f "/sdk/portlibs/switch/$f" || { echo "SDK is missing $f"; exit 1; }
+          done
+          ls -la /sdk/portlibs/switch/lib
+
+      - name: Upload the SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesa-switch-nvk-sdk
+          path: /sdk/
+          if-no-files-found: error
+
+      - name: Meson logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meson-logs
+          path: |
+            /mesa/builddir-native/meson-logs/
+            /mesa/builddir-switch/meson-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  switch-vulkan:
+    needs: sdk
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+      options: --user root
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          command -v python3 >/dev/null && command -v git >/dev/null || {
+            apt-get update && apt-get install -y --no-install-recommends python3 git; }
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/download-artifact@v4
+        with:
+          name: mesa-switch-nvk-sdk
+          path: nvk-sdk
+      - name: glslang for the Switch
+        run: bash port/tools/build_glslang_switch.sh build/glslang-switch
+      - name: Configure
+        run: /opt/devkitpro/portlibs/switch/bin/aarch64-none-elf-cmake -S port -B port/build-switch-vk
+               -DCMAKE_BUILD_TYPE=Release -DSSX_STUB_GEN=ON -DXBOX_VULKAN=ON
+               -DNVK_SDK="$GITHUB_WORKSPACE/nvk-sdk/portlibs/switch"
+               -DGLSLANG_DIR="$GITHUB_WORKSPACE/build/glslang-switch"
+      - name: Build
+        run: cmake --build port/build-switch-vk -j "$(nproc)"
+      - name: The .nro is there
+        run: test -s "port/build-switch-vk/SSX Tricky.nro"

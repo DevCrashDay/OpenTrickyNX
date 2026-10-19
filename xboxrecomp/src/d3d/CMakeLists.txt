@@ -57,12 +57,37 @@ elseif(XBOX_VULKAN)
     endif()
     if(NINTENDO_SWITCH)
         # Switch: NVK from mesa-switch, linked in (no loader; surfaces through
-        # VK_NN_vi_surface). NVK_SDK: its install prefix.
-        set(NVK_SDK "" CACHE PATH "mesa-switch install prefix (include/vulkan, lib/libvulkan_nouveau.a)")
-        find_library(NVK_LIBRARY vulkan_nouveau PATHS ${NVK_SDK}/lib REQUIRED NO_DEFAULT_PATH)
-        target_include_directories(xbox_d3d8 PUBLIC ${NVK_SDK}/include)
-        target_link_libraries(xbox_d3d8 PUBLIC platform SDL2::SDL2
-            -Wl,--start-group ${GLSLANG_LIBS} -Wl,--end-group ${NVK_LIBRARY} nx stdc++ m)
+        # VK_NN_vi_surface). NVK_SDK: its install prefix. danfromtico's
+        # mesa-switch installs lib/libvulkan.a with a CMake package that adds
+        # its own dependencies (libelf, expat, zstd, zlib); older builds a
+        # bare lib/libvulkan_nouveau.a.
+        set(NVK_SDK "" CACHE PATH "mesa-switch install prefix (include/vulkan, lib/libvulkan.a)")
+        if(EXISTS "${NVK_SDK}/lib/cmake/Vulkan/VulkanConfig.cmake")
+            # its dependencies from the SDK itself when they are there (the
+            # "Mesa NVK SDK" workflow puts them in), else from portlibs
+            foreach(dep ELF:elf EXPAT:expat ZSTD:zstd Z:z)
+                string(REPLACE ":" ";" dep "${dep}")
+                list(GET dep 0 var)
+                list(GET dep 1 lib)
+                if(EXISTS "${NVK_SDK}/lib/lib${lib}.a")
+                    set(_VULKAN_SWITCH_${var}_LIBRARY "${NVK_SDK}/lib/lib${lib}.a" CACHE FILEPATH "" FORCE)
+                endif()
+            endforeach()
+            # set ahead: the Switch toolchain only searches its own sysroot
+            set(Vulkan_LIBRARY "${NVK_SDK}/lib/libvulkan.a" CACHE FILEPATH "" FORCE)
+            set(Vulkan_INCLUDE_DIR "${NVK_SDK}/include" CACHE PATH "" FORCE)
+            include("${NVK_SDK}/lib/cmake/Vulkan/VulkanConfig.cmake")
+            if(NOT TARGET Vulkan::Vulkan)
+                message(FATAL_ERROR "NVK_SDK=${NVK_SDK}: VulkanConfig.cmake found no usable Vulkan")
+            endif()
+            target_link_libraries(xbox_d3d8 PUBLIC platform SDL2::SDL2
+                -Wl,--start-group ${GLSLANG_LIBS} -Wl,--end-group Vulkan::Vulkan nx stdc++ m)
+        else()
+            find_library(NVK_LIBRARY NAMES vulkan_nouveau vulkan PATHS ${NVK_SDK}/lib REQUIRED NO_DEFAULT_PATH)
+            target_include_directories(xbox_d3d8 PUBLIC ${NVK_SDK}/include)
+            target_link_libraries(xbox_d3d8 PUBLIC platform SDL2::SDL2
+                -Wl,--start-group ${GLSLANG_LIBS} -Wl,--end-group ${NVK_LIBRARY} nx stdc++ m)
+        endif()
     else()
         find_package(Vulkan REQUIRED)
         target_link_libraries(xbox_d3d8 PUBLIC platform SDL2::SDL2 Vulkan::Vulkan
