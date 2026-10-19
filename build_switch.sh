@@ -73,11 +73,23 @@ else
     echo "== [1/4] game_files/default.xbe already there"
 fi
 
-echo "== [2/4] translating the game (about 3 minutes)"
+echo "== [2/4] translating the game (about 3 minutes, the first time)"
 mkdir -p build
-PYTHON="$PY" bash port/tools/fork_regen.sh
+GEN=port/src/recomp/gen
+STAMP=build/gen.stamp
+NEW_STAMP="$("$PY" port/tools/gen_cache.py stamp | tr -d '\r')"
+if [ -d "$GEN" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$NEW_STAMP" ]; then
+    echo "   nothing it reads has changed since the last build: skipped"
+else
+    rm -f "$STAMP"
+    PYTHON="$PY" bash port/tools/fork_regen.sh
+    # gen/ was rebuilt from zero: files that came out the same keep their old
+    # time, so the compile step only redoes the ones that changed.
+    [ ! -d build/gen.prev ] || "$PY" port/tools/gen_cache.py keep "$GEN" build/gen.prev
+    echo "$NEW_STAMP" > "$STAMP"
+fi
 
-echo "== [3/4] compiling for the Switch (10 to 20 minutes)"
+echo "== [3/4] compiling for the Switch (10 to 20 minutes the first time, then only what changed)"
 BUILD=port/build-switch
 # Only the Release flags are set here: CMAKE_C_FLAGS would replace the Switch
 # toolchain's own (-D__SWITCH__, the CPU, -fPIE).
