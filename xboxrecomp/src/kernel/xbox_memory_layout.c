@@ -243,6 +243,16 @@ static volatile LONG    g_pfifo_pump_running = 0;
  * whether the pump still runs. One increment per turn. */
 volatile uint32_t       g_pump_beats = 0;
 
+/* A guest address the pump follows, as a host pointer. Pointers the title
+ * publishes can name the hardware aperture (the fence readback sits at
+ * 0xFD800000 on one channel), which in the compact layout is not at
+ * mem_base + VA: fold it the way every other guest access is folded. */
+#if XBOX_COMPACT_LAYOUT
+#define PUMP_PTR(mem_base, va) ((uint8_t *)xbox_host_ptr((uint32_t)(va)))
+#else
+#define PUMP_PTR(mem_base, va) ((mem_base) + (va))
+#endif
+
 /*
  * Sync one channel's fence readback to whatever it's being asked to reach.
  *
@@ -262,9 +272,9 @@ volatile uint32_t       g_pump_beats = 0;
  */
 static void xbox_pfifo_sync_fence(uint8_t *mem_base, uint32_t context)
 {
-    uint32_t fence_target0  = *(volatile uint32_t *)(mem_base + context);
-    uint32_t fence_target10 = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_FENCE_TARGET_OFF);
-    uint32_t fence_struct   = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_FENCE_STRUCT_OFF);
+    uint32_t fence_target0  = *(volatile uint32_t *)PUMP_PTR(mem_base, context);
+    uint32_t fence_target10 = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_FENCE_TARGET_OFF);
+    uint32_t fence_struct   = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_FENCE_STRUCT_OFF);
     if (fence_struct) {
         /* Two call sites wait on this same fence-struct readback against
          * two different target fields -- context+0x10 (sub_0016F220) and
@@ -273,7 +283,7 @@ static void xbox_pfifo_sync_fence(uint8_t *mem_base, uint32_t context)
          * its own target satisfied on the next tick regardless of which
          * write happened last. */
         volatile uint32_t *current =
-            (volatile uint32_t *)(mem_base + fence_struct + XBOX_GPU_FENCE_CURRENT_OFF);
+            (volatile uint32_t *)PUMP_PTR(mem_base, fence_struct + XBOX_GPU_FENCE_CURRENT_OFF);
         *current = fence_target10;
         *current = fence_target0;
     }
@@ -458,7 +468,7 @@ static DWORD WINAPI xbox_pfifo_pump_thread(LPVOID param)
          * moment it happens instead of only the consequence. */
         {
             static uint32_t jt_last = 0xFFFFFFFFu;
-            uint32_t jt_now = *(volatile uint32_t *)(mem_base + 0x000FB030u);
+            uint32_t jt_now = *(volatile uint32_t *)PUMP_PTR(mem_base, 0x000FB030u);
             if (jt_last == 0xFFFFFFFFu) jt_last = jt_now;
             if (jt_now != jt_last) {
                 fprintf(stderr, "  [TEXT] .text[0x000FB030] changed 0x%08X -> 0x%08X\n", jt_last, jt_now);
@@ -516,19 +526,19 @@ static DWORD WINAPI xbox_pfifo_pump_thread(LPVOID param)
                 const char *e = getenv("XBOX_PFIFO_ACK_LATE");
                 ack_early = (e && e[0] == '0');
             }
-            context = *(volatile uint32_t *)(mem_base + XBOX_GPU_CONTEXT_PTR_VA);
+            context = *(volatile uint32_t *)PUMP_PTR(mem_base, XBOX_GPU_CONTEXT_PTR_VA);
             if (context && !pfifo_addr_ok(context, XBOX_GPU_CTX_FRAME_CONSUMER_OFF + 4)) {
                 pfifo_bad_ptr("GPU context pointer", context);
                 context = 0;
             }
             if (context) {
-                put      = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_PUT_OFF);
+                put      = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_PUT_OFF);
                 seen_put = put;
-                get_va   = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_GET_PTR_OFF);
-                producer = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_FRAME_PRODUCER_OFF);
-                ft0      = *(volatile uint32_t *)(mem_base + context);
-                ft10     = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_FENCE_TARGET_OFF);
-                fstruct  = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_FENCE_STRUCT_OFF);
+                get_va   = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_GET_PTR_OFF);
+                producer = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_FRAME_PRODUCER_OFF);
+                ft0      = *(volatile uint32_t *)PUMP_PTR(mem_base, context);
+                ft10     = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_FENCE_TARGET_OFF);
+                fstruct  = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_FENCE_STRUCT_OFF);
                 if (get_va && !pfifo_addr_ok(get_va, 4)) {
                     pfifo_bad_ptr("GPU GET pointer", get_va);
                     get_va = 0;
@@ -543,18 +553,18 @@ static DWORD WINAPI xbox_pfifo_pump_thread(LPVOID param)
 
             if (context) {
                 if (get_va)
-                    *(volatile uint32_t *)(mem_base + get_va) = put;
+                    *(volatile uint32_t *)PUMP_PTR(mem_base, get_va) = put;
                 if (fstruct) {
                     /* Same two targets xbox_pfifo_sync_fence syncs, but the
                      * values sampled before translating. */
                     volatile uint32_t *current =
-                        (volatile uint32_t *)(mem_base + fstruct + XBOX_GPU_FENCE_CURRENT_OFF);
+                        (volatile uint32_t *)PUMP_PTR(mem_base, fstruct + XBOX_GPU_FENCE_CURRENT_OFF);
                     *current = ft10;
                     *current = ft0;
                 }
                 /* Fourth channel: per-frame GPU-ahead throttle (see comment
                  * block above, item 4). */
-                *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_FRAME_CONSUMER_OFF) = producer;
+                *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_FRAME_CONSUMER_OFF) = producer;
             }
 
             /* Second known channel: a small literal index, not a heap/global
