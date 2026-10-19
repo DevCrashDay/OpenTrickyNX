@@ -401,7 +401,11 @@ static DWORD WINAPI xbox_vblank_thread(LPVOID param)
      * without spinning; older systems fall back to a plain timer. */
     timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002, TIMER_ALL_ACCESS);
     if (!timer) timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
+#if defined(__SWITCH__)
+    xbox_switch_host_priority(THREAD_PRIORITY_TIME_CRITICAL);
+#else
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+#endif
     QueryPerformanceCounter(&t0);
 
     while (g_pfifo_pump_running) {

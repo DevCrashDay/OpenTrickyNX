@@ -78,6 +78,7 @@ One `KEY=VALUE` per line, `#` starts a comment. Useful lines:
 | `OT_MEM_MHZ=1600` | Memory clock. Default 1600. |
 | `OT_CLOCK_FORCE=1` | Set the clocks even while sys-clk or Horizon OC runs (by default their profile rules). |
 | `XBOX_PERF=1` | Writes a timing summary to the log every 2 seconds. |
+| `XBOX_AUDIO_TONE=1` | A 440 Hz beep over the game's sound, to check the sound output alone. The log has an `[XA2]` line every 10 seconds with what reached the speakers. |
 
 The higher clocks (the ones flatout2-sw / fo2x uses docked) cost heat and battery. The system's clocks come back
 when the game closes.

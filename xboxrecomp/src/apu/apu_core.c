@@ -492,7 +492,11 @@ static void throttle_realtime(MCPXAPUState *d)
     double now = (double)qemu_clock_get_us(QEMU_CLOCK_REALTIME), adj;
 
     if (q_avg < 0.0) {
+#if defined(__SWITCH__)
+        xbox_switch_host_priority(THREAD_PRIORITY_HIGHEST);
+#else
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#endif
         q_avg = q;
     }
     q_avg += (q - q_avg) * (1.0 / 64.0);       /* ~43 ms at 1,500 frames/s */

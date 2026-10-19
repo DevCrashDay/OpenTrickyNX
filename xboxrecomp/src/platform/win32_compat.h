@@ -176,6 +176,11 @@ HANDLE GetCurrentThread(void);
 HANDLE GetCurrentProcess(void);
 DWORD  GetCurrentProcessId(void);
 BOOL   SetThreadPriority(HANDLE h, int priority);
+#if defined(__SWITCH__)
+/* A host timing thread (vblank, kernel timers, APU frames) raises itself to a
+ * real Horizon priority; SetThreadPriority only records one. */
+void   xbox_switch_host_priority(int priority);
+#endif
 int    GetThreadPriority(HANDLE h);
 VOID   SwitchToThread(void);
 DWORD  QueueUserAPC(PAPCFUNC func, HANDLE thread, ULONG_PTR data);

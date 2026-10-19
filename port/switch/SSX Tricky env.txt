@@ -52,6 +52,12 @@ OT_MEM_MHZ=1600
 #XBOX_AUDIO_OUTPUT=auto
 # Delay in buffers: 4 (short, may crackle), 8 (normal), 12, 16.
 #XBOX_AUDIO_QUEUE=8
+# 1: a 440 Hz beep over the game's sound, to check the sound output alone.
+#XBOX_AUDIO_TONE=0
+# Priority of the sound output thread (0x2B; 0 = SDL's own, the lowest) and
+# of the timing threads (vblank, timers, sound mixing; 0 = all at the lowest).
+#OT_AUDIO_PRIO=0x2B
+#OT_HOST_PRIO=1
 
 # ── Game ────────────────────────────────────────────────────────────
 # Button pictures: auto, modern, playstation or ps2.

@@ -782,6 +782,23 @@ BOOL SetThreadPriority(HANDLE h, int priority)
     return TRUE;   /* real RT priorities need privileges; tracked only */
 }
 
+#if defined(__SWITCH__)
+/* Every pthread starts at 0x3B, the lowest application priority, where the
+ * game's own threads run; a timing thread that sleeps between ticks then
+ * waits behind them for its slice and the tick comes late. Above NORMAL maps
+ * to 0x2B..0x2D (the main thread is 0x2C). OT_HOST_PRIO=0 leaves all at 0x3B. */
+void xbox_switch_host_priority(int priority)
+{
+    const char *e = getenv("OT_HOST_PRIO");
+    int prio = priority >= THREAD_PRIORITY_TIME_CRITICAL ? 0x2B
+             : priority >= THREAD_PRIORITY_HIGHEST ? 0x2C
+             : priority >= THREAD_PRIORITY_ABOVE_NORMAL ? 0x2D : 0;
+    SetThreadPriority(GetCurrentThread(), priority);
+    if (!prio || (e && e[0] == '0')) return;
+    svcSetThreadPriority(CUR_THREAD_HANDLE, prio);
+}
+#endif
+
 int GetThreadPriority(HANDLE h)
 {
     w32_object *o = (h == PSEUDO_CURRENT_THREAD) ? t_self_obj : obj_of(h);

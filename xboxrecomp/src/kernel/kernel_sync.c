@@ -370,7 +370,11 @@ static void kt_remove_at(int i)
 static DWORD WINAPI kt_thread(LPVOID unused)
 {
     (void)unused;
+#if defined(__SWITCH__)
+    xbox_switch_host_priority(THREAD_PRIORITY_TIME_CRITICAL);
+#else
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+#endif
     for (;;) {
         LARGE_INTEGER q;
         LONGLONG next = 0x7FFFFFFFFFFFFFFFll;
