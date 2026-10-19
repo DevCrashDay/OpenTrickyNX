@@ -57,7 +57,7 @@ OT_MEM_MHZ=1600
 #XBOX_AUDIO_QUEUE=8
 # 1: a 440 Hz beep over the game's sound, to check the sound output alone.
 #XBOX_AUDIO_TONE=0
-# Priority of the sound output thread (0x2B; 0 = SDL's own, the lowest) and
+# Priority of the sound output thread (0x2B; 0 = the lowest, 0x3B) and
 # of the timing threads (vblank, timers, sound mixing; 0 = all at the lowest).
 #OT_AUDIO_PRIO=0x2B
 #OT_HOST_PRIO=1
