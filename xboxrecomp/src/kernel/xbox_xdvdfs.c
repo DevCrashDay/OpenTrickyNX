@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
 
 #define XDVDFS_SECTOR       2048u
 #define XDVDFS_DESC_SECTOR  32u
@@ -34,9 +35,17 @@ static BOOL raw_read(uint64_t offset, void *buf, uint32_t len)
 {
     size_t got;
     if (!s_iso) return FALSE;
-    if (_fseeki64(s_iso, (long long)(s_base + offset), SEEK_SET) != 0)
+    if (_fseeki64(s_iso, (long long)(s_base + offset), SEEK_SET) != 0) {
+        fprintf(stderr, "  XDVDFS: seek to 0x%llX failed (errno %d)\n",
+                (unsigned long long)(s_base + offset), errno);
         return FALSE;
+    }
     got = fread(buf, 1, len, s_iso);
+    if (got != len) {
+        fprintf(stderr, "  XDVDFS: read %u bytes at 0x%llX: got %u (errno %d, eof %d)\n", len,
+                (unsigned long long)(s_base + offset), (unsigned)got, errno, feof(s_iso));
+        clearerr(s_iso);
+    }
     return got == len;
 }
 
@@ -297,6 +306,18 @@ BOOL xdvdfs_find(const char *rel_path, uint32_t *out_sector,
     }
     LeaveCriticalSection(&s_cs);
 
+    if (!ok && strchr(rel_path, '\\') == NULL && strchr(rel_path, '/') == NULL) {
+        /* A file missing from the root: what the root holds (once). */
+        static int listed;
+        if (!listed++) {
+            xdvdfs_entry e[12];
+            uint32_t n = xdvdfs_list(s_root_sec, s_root_size, e, 12), i;
+            fprintf(stderr, "  XDVDFS: \"%s\" not in the root (root sector %u, %u bytes); %u entries:",
+                    rel_path, s_root_sec, s_root_size, n);
+            for (i = 0; i < n; i++) fprintf(stderr, " %s", e[i].name);
+            fprintf(stderr, "\n");
+        }
+    }
     if (!ok) return FALSE;
     if (out_sector) *out_sector = sec;
     if (out_size)   *out_size   = size;

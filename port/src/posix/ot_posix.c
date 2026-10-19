@@ -653,10 +653,12 @@ void ot_host_init(void)
         char dir[1024], path[1100];
         if (ot_exe_dir(dir, sizeof dir)) {
             snprintf(path, sizeof path, "%s%sSSX Tricky.log", dir, dir[strlen(dir) - 1] == '/' ? "" : "/");
-            if (freopen(path, "w", stdout)) {
-                setvbuf(stdout, NULL, _IONBF, 0);
-                if (freopen(path, "a", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
-            }
+            /* Emptied, then both streams opened to append: with one of them
+             * at its own position, its writes covered the other's lines. */
+            FILE *t = fopen(path, "w");
+            if (t) fclose(t);
+            if (freopen(path, "a", stdout)) setvbuf(stdout, NULL, _IONBF, 0);
+            if (freopen(path, "a", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
         }
     }
     printf("SSX Tricky (OpenTrickyNX) starting: %s\n", s_argc > 0 ? s_argv[0] : "?");

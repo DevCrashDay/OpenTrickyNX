@@ -304,14 +304,24 @@ static BOOL load_xbe_from_iso(const char *rel_path, void **out_data, size_t *out
     void    *data;
 
     if (!xdvdfs_find(rel_path, &sector, &size, &attrs) ||
-        (attrs & XDVDFS_ATTR_DIRECTORY) || size == 0)
+        (attrs & XDVDFS_ATTR_DIRECTORY) || size == 0) {
+        fprintf(stderr, "  %s: not found on the disc image (sector %u, %u bytes, attributes 0x%02X)\n",
+                rel_path, sector, size, attrs);
         return FALSE;
+    }
 
     data = malloc(size);
-    if (!data) return FALSE;
+    if (!data) {
+        fprintf(stderr, "  %s: no memory for %u bytes\n", rel_path, size);
+        return FALSE;
+    }
 
     got = xdvdfs_read(sector, size, 0, data, size);
-    if (got != size) { free(data); return FALSE; }
+    if (got != size) {
+        fprintf(stderr, "  %s: read %u of %u bytes at sector %u\n", rel_path, got, size, sector);
+        free(data);
+        return FALSE;
+    }
 
     *out_data = data;
     *out_size = size;
