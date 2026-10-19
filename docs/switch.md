@@ -43,8 +43,10 @@ The first build downloads the `devkitpro/devkita64` image (about 3 GB).
 ## Install
 
 1. Copy `dist/switch/opentricky/` to `sdmc:/switch/` on the SD card.
-2. Copy your disc image into that folder too: `sdmc:/switch/opentricky/SSX Tricky (USA).iso`. The game uses the
-   first `.iso` it finds there, unless `settings.ini` names another one as `DiscImage`.
+2. Extract your disc into a `game` folder there, so that `sdmc:/switch/opentricky/game/default.xbe` exists.
+   With extract-xiso: `extract-xiso -x "SSX Tricky (USA).iso" -d game`, then copy `game` over. Without a `game`
+   folder the game uses the first `.iso` in `sdmc:/switch/opentricky/` instead, or the one `settings.ini` names as
+   `DiscImage`.
 3. Start the Homebrew Menu **over a game** (hold **R** while starting any installed game), then start
    *SSX Tricky (OpenTricky)*.
 
@@ -59,7 +61,8 @@ All in `sdmc:/switch/opentricky/`:
 | | |
 |---|---|
 | `SSX Tricky.nro` | The game. |
-| `*.iso` | Your disc image. The game reads it in place; nothing is extracted. |
+| `game/` | Your extracted disc (`default.xbe` and the `data` folder). |
+| `*.iso` | Or, without `game/`: your disc image, read in place. |
 | `settings.ini` | Optional: the settings, the same file as on Windows. Not created by the game; write only the lines you change, under their section, e.g. `[Display]` then the key. |
 | `Saves/` | Saved games (the Xbox hard disk's save area). |
 
@@ -79,7 +82,7 @@ later.
 
 ## Troubleshooting
 
-- **A message says the disc image is missing**: put the `.iso` in `sdmc:/switch/opentricky/`, or give its full
+- **A message says the disc image is missing**: check that `game/default.xbe` is there, or put the `.iso` in `sdmc:/switch/opentricky/`, or give its full
   path (`sdmc:/...`) as `DiscImage` in `settings.ini`.
 - **The log**: start it with `nxlink -s "SSX Tricky.nro"` from a computer on the same network to see what it
   prints, or read `SSX Tricky.log`, which the game always writes beside the `.nro`.

@@ -856,15 +856,33 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         BOOL direct = has_flag(L"--direct") || cli != NULL ||
                       (output_is_redirected() && !has_flag(L"--play"));
         use_config = !direct;
+#ifndef _WIN32
+        BOOL use_config_folder = FALSE;
+#endif
 
+#ifndef _WIN32
+        /* No launcher here to choose a disc. Without DiscImage in
+         * settings.ini: the extracted disc in "game" beside the game (as the
+         * other Switch ports of Xbox games use), else the first .iso there. */
+        if (use_config && !launch_cfg.iso[0]) {
+            char xbe[MAX_PATH];
+            FILE *f;
+            resolve_from_exe(YOUR_GAME_XBE_PATH, xbe, sizeof xbe);
+            if ((f = fopen(xbe, "rb")) != NULL) {
+                fclose(f);
+                use_config_folder = TRUE;
+                printf("Game disc: the extracted files in %s\n", xbe);
+            } else {
+                ot_find_iso(launch_cfg.iso, sizeof launch_cfg.iso);
+            }
+        }
+        if (use_config && !use_config_folder) {
+#else
         if (use_config) {
+#endif
             /* A relative DiscImage is relative to the install root, as in the
              * launcher: not to the working folder (bin\ on a double-click). */
             char why[512], iso[MAX_PATH];
-#ifndef _WIN32
-            /* No launcher here to choose one: the disc image beside the game. */
-            if (!launch_cfg.iso[0]) ot_find_iso(launch_cfg.iso, sizeof launch_cfg.iso);
-#endif
             launcher_resolve_path(launch_cfg.iso, iso, sizeof iso);
             /* Before the check: its folder is blanked in crash dumps, its
              * name hidden in the texts (the check's message too). */
@@ -874,7 +892,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             if (!xdvdfs_mount(iso))
                 return open_launcher_instead("The disc image could not be opened.");
             printf("Game disc: %s (ISO)\n", iso);
-        } else {
+        } else if (!use_config) {
             char iso_path[MAX_PATH];
             BOOL mounted = FALSE;
 

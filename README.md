@@ -50,7 +50,7 @@ PS2 controls) comes along; what is new here is the Switch side:
 - **Memory**: the Xbox's 64 MB and the GPU's registers live in one block of Switch memory instead of at fixed Xbox addresses.
 - **Hardware registers**: the audio, sound-chip and video-DAC registers are trapped through the Switch's exception handler.
 - **Renderer**: a new OpenGL 3.3 backend, with the Xbox's colour combiners turned into GLSL shaders.
-- **The disc**: the game reads your `.iso` straight from the SD card while you play; nothing is extracted.
+- **The disc**: the game reads the disc's files from a `game` folder beside it (extracted with extract-xiso), or straight from an `.iso`.
 
 ## What you need
 
@@ -90,8 +90,9 @@ The script reads `default.xbe` from your disc image, translates it to C, applies
 ## Install and play
 
 1. Copy `dist/switch/opentricky/` to `sdmc:/switch/` on the SD card.
-2. Put your disc image in the same folder: `sdmc:/switch/opentricky/SSX Tricky (USA).iso`. Keep it as an `.iso`, don't extract it.
-   On a FAT32 card, files over 4 GB don't fit: shrink the image first with `extract-xiso -r`, or use exFAT.
+2. Extract your disc image into a folder named `game` inside it, so the disc's `default.xbe` ends up at
+   `sdmc:/switch/opentricky/game/default.xbe`. With extract-xiso: `extract-xiso -x "SSX Tricky (USA).iso" -d game`.
+   (An `.iso` in `sdmc:/switch/opentricky/` works too, when there is no `game` folder.)
 3. Hold **R** while starting any installed game to open the Homebrew Menu **over a game**, then start *SSX Tricky (OpenTricky)*.
    Started from the album, homebrew doesn't get enough memory: the game says so and stops.
 
