@@ -185,7 +185,15 @@ jobs:
           mv /sdk/switch /sdk/portlibs-switch && mkdir -p /sdk/portlibs && mv /sdk/portlibs-switch /sdk/portlibs/switch
           # the Rust std has to be inside libvulkan.a
           nm -s /sdk/portlibs/switch/lib/libvulkan.a > /tmp/libvulkan.nm 2>/dev/null || true
-          grep -q '___rdl_alloc in std-' /tmp/libvulkan.nm || { echo "libvulkan.a has no Rust std"; exit 1; }
+          if ! grep -q '___rdl_alloc in std-' /tmp/libvulkan.nm; then
+            echo "libvulkan.a has no Rust std"
+            nak=/mesa/builddir-switch/src/nouveau/compiler/libnak_rs.a
+            ls -la "$nak" || true
+            echo "non-nak_rs members of libnak_rs.a:"; ar t "$nak" | grep -v '^nak_rs' | head -20 || true
+            grep -A1 'build src/nouveau/compiler/libnak_rs.a:' /mesa/builddir-switch/build.ninja | cut -c1-600 || true
+            /root/.cargo/bin/rustc --version --verbose || true
+            exit 1
+          fi
           for f in lib/libvulkan.a lib/libEGL.a lib/libglapi.a include/vulkan/vulkan.h include/vulkan/vulkan_vi.h lib/cmake/Vulkan/VulkanConfig.cmake; do
             test -f "/sdk/portlibs/switch/$f" || { echo "SDK is missing $f"; exit 1; }
           done
