@@ -20,6 +20,9 @@ OT_MEM_MHZ=1600
 # 0: run the game's vertex programs on the CPU, as before (slower; use it if
 # 3D scenes look wrong with the default GPU path).
 #XBOX_VSH_GPU=1
+# 0: hand vertex and constant data to the GPU the old way (one map per draw)
+# instead of through buffers that stay mapped; only to compare or if 3D breaks.
+#XBOX_GL_PERSIST=1
 # 1: report OpenGL errors in the log.
 #XBOX_GL_DEBUG=1
 

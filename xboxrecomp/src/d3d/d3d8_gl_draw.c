@@ -388,12 +388,84 @@ void gld_states_apply(void)
 static GLuint s_vb_ring, s_ib_ring;
 static size_t s_vb_off, s_ib_off;
 
+/* Persistent rings (GL_ARB_buffer_storage; XBOX_GL_PERSIST=0 turns them off).
+ * Each ring stays mapped for good and a draw's data is a memcpy, where the
+ * plain path maps and unmaps once per upload and orphans two uniform buffers
+ * per draw -- most of the per-draw cost on the Switch's Mesa (nouveau). A
+ * ring is RSEG segments; leaving one puts a fence behind it, entering one
+ * waits for its fence from the lap before. An allocation never straddles two
+ * segments, so every draw that used a segment was issued before its fence. */
+#define RSEG 8
+#define UB_RING (16u * 1024u * 1024u)
+typedef void (APIENTRYP pfn_buffer_storage)(GLenum, GLsizeiptr, const void *, GLbitfield);
+struct pring {
+    GLuint *buf;
+    size_t cap, *off;
+    uint8_t *map;
+    int seg;
+    unsigned adv;                       /* segments entered so far */
+    GLsync fence[RSEG];
+};
+static int s_persist;
+static GLuint s_ub_ring;
+static size_t s_ub_off;
+static GLint s_ub_align = 256;
+static struct pring s_pr_vb = { .buf = &s_vb_ring, .cap = VB_RING, .off = &s_vb_off };
+static struct pring s_pr_ib = { .buf = &s_ib_ring, .cap = IB_RING, .off = &s_ib_off };
+static struct pring s_pr_ub = { .buf = &s_ub_ring, .cap = UB_RING, .off = &s_ub_off };
+
+/* Make room for `size` bytes at `align` in the current segment, moving to
+ * the next one when they do not fit. Returns the offset, -1 if too big. */
+static long pring_reserve(struct pring *r, size_t size, size_t align)
+{
+    size_t segsz = r->cap / RSEG, o = (*r->off + align - 1) / align * align;
+    if (size + align > segsz) return -1;
+    if (o + size > (size_t)(r->seg + 1) * segsz) {
+        r->fence[r->seg] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        r->seg = (r->seg + 1) % RSEG;
+        r->adv++;
+        if (r->fence[r->seg]) {
+            glClientWaitSync(r->fence[r->seg], GL_SYNC_FLUSH_COMMANDS_BIT, 2000000000ull);
+            glDeleteSync(r->fence[r->seg]);
+            r->fence[r->seg] = 0;
+        }
+        /* a multiple of align (a vertex stride, for glDrawArrays' first) */
+        o = ((size_t)r->seg * segsz + align - 1) / align * align;
+        if (o + size > (size_t)(r->seg + 1) * segsz) return -1;
+    }
+    *r->off = o;
+    return (long)o;
+}
+
+static long pring_put(struct pring *r, const void *data, size_t size, size_t align)
+{
+    long o = pring_reserve(r, size, align);
+    if (o < 0) return -1;
+    memcpy(r->map + o, data, size);
+    *r->off = (size_t)o + size;
+    return o;
+}
+
+static int pring_create(struct pring *r, GLenum target, pfn_buffer_storage storage)
+{
+    const GLbitfield f = GL_MAP_WRITE_BIT | 0x0040 /* PERSISTENT */ | 0x0080 /* COHERENT */;
+    if (!*r->buf) glGenBuffers(1, r->buf);
+    glBindBuffer(target, *r->buf);
+    storage(target, (GLsizeiptr)r->cap, NULL, f);
+    r->map = (uint8_t *)glMapBufferRange(target, 0, (GLsizeiptr)r->cap, f);
+    *r->off = 0;
+    r->seg = 0;
+    return r->map != NULL;
+}
+
 /* Copy into the ring at a multiple of `align`; returns the offset or -1.
  * The buffer must be bound to `target` by the caller. */
 static long ring_put(GLenum target, size_t cap, size_t *off, const void *data, size_t size, size_t align)
 {
     size_t o = (*off + align - 1) / align * align;
     void *p;
+    if (s_persist)
+        return pring_put(target == GL_ARRAY_BUFFER ? &s_pr_vb : &s_pr_ib, data, size, align);
     if (size > cap) return -1;
     if (o + size > cap) {               /* wrap: orphan the storage */
         glBufferData(target, (GLsizeiptr)cap, NULL, GL_STREAM_DRAW);
@@ -804,6 +876,41 @@ int gld_draw_init(void)
     glBindVertexArray(s_ffp_vao);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_ib_ring);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, IB_RING, NULL, GL_STREAM_DRAW);
+    {
+        const char *e = getenv("XBOX_GL_PERSIST");
+        pfn_buffer_storage storage = (pfn_buffer_storage)SDL_GL_GetProcAddress("glBufferStorage");
+        if (!(e && e[0] == '0') && storage &&
+            ((major > 4 || (major == 4 && minor >= 4)) || has_ext("GL_ARB_buffer_storage"))) {
+            /* buffer names with storage from glBufferData cannot take
+             * immutable storage: fresh ones (the VAO above rebinds below) */
+            glDeleteBuffers(1, &s_vb_ring);
+            glDeleteBuffers(1, &s_ib_ring);
+            s_vb_ring = s_ib_ring = 0;
+            glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &s_ub_align);
+            if (s_ub_align < 16) s_ub_align = 16;
+            s_persist = pring_create(&s_pr_vb, GL_ARRAY_BUFFER, storage) &&
+                        pring_create(&s_pr_ib, GL_ELEMENT_ARRAY_BUFFER, storage) &&
+                        pring_create(&s_pr_ub, GL_UNIFORM_BUFFER, storage);
+            glBindBuffer(GL_UNIFORM_BUFFER, 0);
+            if (!s_persist) {
+                /* back to the plain rings */
+                fprintf(stderr, "[GL] persistent rings failed: plain uploads\n");
+                if (s_ub_ring) glDeleteBuffers(1, &s_ub_ring);
+                glDeleteBuffers(1, &s_vb_ring);
+                glDeleteBuffers(1, &s_ib_ring);
+                s_vb_ring = s_ib_ring = s_ub_ring = 0;
+                glGenBuffers(1, &s_vb_ring);
+                glBindBuffer(GL_ARRAY_BUFFER, s_vb_ring);
+                glBufferData(GL_ARRAY_BUFFER, VB_RING, NULL, GL_STREAM_DRAW);
+                glGenBuffers(1, &s_ib_ring);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_ib_ring);
+                glBufferData(GL_ELEMENT_ARRAY_BUFFER, IB_RING, NULL, GL_STREAM_DRAW);
+            }
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_ib_ring);   /* into s_ffp_vao */
+        }
+        fprintf(stderr, "[GL] uploads: %s\n", s_persist
+                ? "persistent mapped rings (XBOX_GL_PERSIST=0 for plain)" : "mapped per draw");
+    }
     vp_init();
     glBindVertexArray(0);
 
@@ -1276,6 +1383,25 @@ static void nv_layout(GLsizei stride)
     }
 }
 
+/* The pixel shader's constants (PshConsts, binding 0) for the next draw. */
+static int ps_uniforms(const void *c, size_t n)
+{
+    size_t bind = n < 512 ? 512 : (n + 15u) & ~(size_t)15u;
+    if (s_persist) {
+        long o = pring_reserve(&s_pr_ub, bind, (size_t)s_ub_align);
+        if (o < 0) return 0;
+        if (c && n) memcpy(s_pr_ub.map + o, c, n);
+        s_ub_off = (size_t)o + bind;
+        glBindBufferRange(GL_UNIFORM_BUFFER, 0, s_ub_ring, (GLintptr)o, (GLsizeiptr)bind);
+        return 1;
+    }
+    glBindBuffer(GL_UNIFORM_BUFFER, s_nv_ubo);
+    glBufferData(GL_UNIFORM_BUFFER, (GLsizeiptr)bind, NULL, GL_STREAM_DRAW);
+    if (c && n) glBufferSubData(GL_UNIFORM_BUFFER, 0, (GLsizeiptr)n, c);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, s_nv_ubo);
+    return 1;
+}
+
 HRESULT d3d8_nv2a_draw(D3DPRIMITIVETYPE prim, UINT prim_count, const void *verts, UINT stride,
                        unsigned long long ps_key, const void *ps_consts, UINT ps_consts_size,
                        int raster)
@@ -1310,11 +1436,7 @@ HRESULT d3d8_nv2a_draw(D3DPRIMITIVETYPE prim, UINT prim_count, const void *verts
     if (sw <= 0.0f) sw = 640.0f;
     if (sh <= 0.0f) sh = 480.0f;
     glUniform4f(s_ps[slot].screen, sw, sh, 0.0f, 0.0f);
-    glBindBuffer(GL_UNIFORM_BUFFER, s_nv_ubo);
-    glBufferData(GL_UNIFORM_BUFFER, (GLsizeiptr)(ps_consts_size < 512 ? 512 : ps_consts_size), NULL, GL_STREAM_DRAW);
-    if (ps_consts && ps_consts_size)
-        glBufferSubData(GL_UNIFORM_BUFFER, 0, (GLsizeiptr)ps_consts_size, ps_consts);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, s_nv_ubo);
+    if (!ps_uniforms(ps_consts, ps_consts_size)) return E_OUTOFMEMORY;
 
     bind_vao(s_nv_vao);
     glBindBuffer(GL_ARRAY_BUFFER, s_vb_ring);
@@ -1355,6 +1477,8 @@ static GLuint s_vp_vao, s_vp_cubo, s_vp_pubo;
 static unsigned s_vp_enabled, s_vp_divisor;     /* attribute arrays on, instanced */
 static float s_vp_c[192][4];
 static int s_vp_c_valid;
+static long s_vp_c_off;                         /* persistent: where s_vp_c sits */
+static unsigned s_vp_c_adv;                     /* ...and s_pr_ub.adv then */
 static struct { unsigned long long hash; uint8_t kind[16]; int slot; } s_vp_last = { 0, { 0 }, -1 };
 static struct { GLuint vs; int ps; GLuint prog; } s_vpl_last;
 
@@ -1528,7 +1652,7 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     int gi[16];
     struct { float screen[4], fog[4], flags[4], vattr[16][4], point[4], hud[4]; } params;
     int slot = ps_slot(d->ps_key, 0);
-    int a, g, ngrp = 0;
+    int need_c, a, g, ngrp = 0;
     unsigned enabled = 0, divisor = 0;
     uint16_t done = 0;
     GLuint vs, prog;
@@ -1595,7 +1719,9 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
         size_t total = 0;
         for (g = 0; g < ngrp; g++) total += ((size_t)grp[g].size + 15u) & ~(size_t)15u;
         if (total > VB_RING) return 0;
-        if (((s_vb_off + 15u) & ~(size_t)15u) + total > VB_RING) {
+        if (s_persist) {
+            if (pring_reserve(&s_pr_vb, total, 16) < 0) return 0;
+        } else if (((s_vb_off + 15u) & ~(size_t)15u) + total > VB_RING) {
             glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)VB_RING, NULL, GL_STREAM_DRAW);
             s_vb_off = 0;
         }
@@ -1633,8 +1759,12 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     if (ioff < 0) return 0;
     if (g_perf_on) { double t = perf_now(); perf_add(PZ_DUP, t - pt); pt = t; }
 
-    if (!s_vp_c_valid || memcmp(s_vp_c, d->vconst, sizeof s_vp_c)) {
-        memcpy(s_vp_c, d->vconst, sizeof s_vp_c);
+    /* constants: uploaded again only when they changed (or, from the
+     * uniform ring, before their segment comes round again) */
+    need_c = !s_vp_c_valid || memcmp(s_vp_c, d->vconst, sizeof s_vp_c) ||
+             (s_persist && s_pr_ub.adv - s_vp_c_adv >= RSEG - 2);
+    if (need_c) memcpy(s_vp_c, d->vconst, sizeof s_vp_c);
+    if (!s_persist && need_c) {
         glBindBuffer(GL_UNIFORM_BUFFER, s_vp_cubo);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof s_vp_c, s_vp_c);
         s_vp_c_valid = 1;
@@ -1654,15 +1784,30 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     params.hud[2] = d->hud_ky;
     params.hud[3] = d->hud_ay;
     if (d->attr_const) memcpy(params.vattr, d->attr_const, sizeof params.vattr);
-    glBindBuffer(GL_UNIFORM_BUFFER, s_vp_pubo);
-    glBufferData(GL_UNIFORM_BUFFER, sizeof params, &params, GL_STREAM_DRAW);
-    glBindBuffer(GL_UNIFORM_BUFFER, s_nv_ubo);
-    glBufferData(GL_UNIFORM_BUFFER, (GLsizeiptr)(d->ps_consts_size < 512 ? 512 : d->ps_consts_size), NULL, GL_STREAM_DRAW);
-    if (d->ps_consts && d->ps_consts_size)
-        glBufferSubData(GL_UNIFORM_BUFFER, 0, (GLsizeiptr)d->ps_consts_size, d->ps_consts);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, s_nv_ubo);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 1, s_vp_cubo);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 2, s_vp_pubo);
+    if (s_persist) {
+        /* all of this draw's uniforms in one segment (see pring_reserve) */
+        size_t al = (size_t)s_ub_align;
+        size_t pb = d->ps_consts_size < 512 ? 512 : ((size_t)d->ps_consts_size + 15u) & ~(size_t)15u;
+        size_t total = (sizeof params + al - 1) / al * al + (pb + al - 1) / al * al +
+                       (need_c ? (sizeof s_vp_c + al - 1) / al * al : 0);
+        long po;
+        if (pring_reserve(&s_pr_ub, total, al) < 0) return 0;
+        if (need_c) {
+            s_vp_c_off = pring_put(&s_pr_ub, s_vp_c, sizeof s_vp_c, al);
+            s_vp_c_adv = s_pr_ub.adv;
+            s_vp_c_valid = 1;
+        }
+        po = pring_put(&s_pr_ub, &params, sizeof params, al);
+        if (po < 0 || s_vp_c_off < 0 || !ps_uniforms(d->ps_consts, d->ps_consts_size)) return 0;
+        glBindBufferRange(GL_UNIFORM_BUFFER, 1, s_ub_ring, (GLintptr)s_vp_c_off, (GLsizeiptr)sizeof s_vp_c);
+        glBindBufferRange(GL_UNIFORM_BUFFER, 2, s_ub_ring, (GLintptr)po, (GLsizeiptr)sizeof params);
+    } else {
+        glBindBuffer(GL_UNIFORM_BUFFER, s_vp_pubo);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof params, &params, GL_STREAM_DRAW);
+        ps_uniforms(d->ps_consts, d->ps_consts_size);
+        glBindBufferBase(GL_UNIFORM_BUFFER, 1, s_vp_cubo);
+        glBindBufferBase(GL_UNIFORM_BUFFER, 2, s_vp_pubo);
+    }
     if (g_perf_on) { double t = perf_now(); perf_add(PZ_DCB, t - pt); pt = t; }
 
     if (g_gpuprof_on) gpuprof_draw_begin();
