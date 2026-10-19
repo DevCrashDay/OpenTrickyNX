@@ -2,7 +2,7 @@
  * nv2a_dxgi_shim.h -- the DXGI_FORMAT values nv2a_pgraph_d3d11.c names, for
  * hosts without the Windows SDK. Same numbers as <dxgiformat.h>; they only
  * travel in Nv2aVshDraw.attr[].dxgi_format to the D3D layer, which on the
- * OpenGL backend does not take the GPU vertex-program path at all.
+ * OpenGL backend turns them into GL attribute formats (d3d8_gl_draw.c).
  */
 #ifndef NV2A_DXGI_SHIM_H
 #define NV2A_DXGI_SHIM_H

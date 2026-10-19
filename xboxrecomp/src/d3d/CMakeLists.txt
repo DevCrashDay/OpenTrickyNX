@@ -27,6 +27,7 @@ else()
         d3d8_gl_device.c
         d3d8_gl_resources.c
         d3d8_gl_draw.c
+        d3d8_gl_vsh.c
     )
     find_package(SDL2 REQUIRED)
     if(NINTENDO_SWITCH)

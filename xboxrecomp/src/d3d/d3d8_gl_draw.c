@@ -11,8 +11,9 @@
  *   - The NV2A-native path (d3d8_nv2a.c): the perspective-correct pass-
  *     through vertex shader over ProgVertex (116 bytes), and a program cache
  *     keyed by nv2a_psh_key() of the GLSL pixel shaders nv2a_psh.c generates.
- *     Vertex programs always run on the CPU here (d3d8_nv2a_vsh_ready and
- *     d3d8_nv2a_draw_program_gpu answer 0).
+ *   - Vertex programs on the GPU: GLSL vertex shaders generated from the
+ *     decoded program (d3d8_gl_vsh.c), linked with those pixel shaders, over
+ *     the title's own vertex arrays. Point sprites stay on the CPU path.
  *
  * Clip-space conversion: D3D's z in [0, w] becomes GL's [-w, w] with
  * z' = 2z - w in every vertex shader; winding is unchanged since the image
@@ -691,8 +692,10 @@ static GLsizei s_nv_vao_stride;
 
 #define NV_PS_CACHE 2048
 #define NV_PS_SLOTS (NV_PS_CACHE * 2)
-static struct { unsigned long long key; GLuint prog; GLint screen; int used; } s_ps[NV_PS_SLOTS];
+static struct { unsigned long long key; GLuint prog, fs; GLint screen; int used; } s_ps[NV_PS_SLOTS];
 static int s_ps_count;
+static void vp_init(void);
+static void vp_shutdown(void);
 
 /* ── Blit ─────────────────────────────────────────────────────────── */
 static const char s_blit_vs[] =
@@ -800,6 +803,7 @@ int gld_draw_init(void)
     glBindVertexArray(s_ffp_vao);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_ib_ring);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, IB_RING, NULL, GL_STREAM_DRAW);
+    vp_init();
     glBindVertexArray(0);
 
     glGenTextures(1, &s_dummy_tex);
@@ -819,7 +823,11 @@ int gld_draw_init(void)
 void gld_draw_shutdown(void)
 {
     int i;
-    for (i = 0; i < NV_PS_SLOTS; i++) if (s_ps[i].prog) glDeleteProgram(s_ps[i].prog);
+    vp_shutdown();
+    for (i = 0; i < NV_PS_SLOTS; i++) {
+        if (s_ps[i].prog) glDeleteProgram(s_ps[i].prog);
+        if (s_ps[i].fs) glDeleteShader(s_ps[i].fs);
+    }
     memset(s_ps, 0, sizeof s_ps);
     s_ps_count = 0;
     for (i = 0; i < s_nsmp; i++) glDeleteSamplers(1, &s_smp[i].s);
@@ -1229,12 +1237,12 @@ int d3d8_nv2a_add_ps(unsigned long long key, const char *src, int len)
     t0 = SDL_GetPerformanceCounter();
     fs = compile(GL_FRAGMENT_SHADER, src, len, "nv2a pixel");
     prog = link(s_nv_vs_sh, fs, "nv2a");
-    if (fs) glDeleteShader(fs);
     g_nv_compiles++;
     g_nv_compile_ms += (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 /
                        (double)SDL_GetPerformanceFrequency();
     if (!prog) {
         static int dumped;
+        if (fs) glDeleteShader(fs);
         if (dumped++ < 2) fprintf(stderr, "[NV2A-PSH] pixel shader %016llX source:\n%.*s\n", key, len, src);
         return 0;
     }
@@ -1243,6 +1251,7 @@ int d3d8_nv2a_add_ps(unsigned long long key, const char *src, int len)
     bind_samplers(prog, names);
     s_ps[slot].key = key;
     s_ps[slot].prog = prog;
+    s_ps[slot].fs = fs;                 /* kept: linked again with program vertex shaders */
     s_ps[slot].screen = glGetUniformLocation(prog, "screen");
     s_ps[slot].used = 1;
     s_ps_count++;
@@ -1319,10 +1328,347 @@ HRESULT d3d8_nv2a_draw(D3DPRIMITIVETYPE prim, UINT prim_count, const void *verts
 }
 
 /* ================================================================
- * Vertex programs on the GPU: not on GL (the CPU interpreter runs them)
+ * Vertex programs on the GPU (d3d8_nv2a.c's job on D3D11)
+ *
+ * gpu_prepare() in the translator hands over the decoded program and the
+ * title's vertex arrays; the program becomes a GLSL vertex shader
+ * (d3d8_gl_vsh.c), cached by program and input kinds, and is linked with
+ * the draw's combiner pixel shader. Its 192 constants and per-draw
+ * parameters are std140 blocks (bindings 1 and 2; the pixel constants
+ * keep 0). An array with stride 0 (one element for every vertex) is read
+ * through an instance divisor, since a GL stride of 0 means "packed".
+ * Points answer 0 here and stay on the CPU path, as does any program whose
+ * shader does not compile.
  * ================================================================ */
-int d3d8_nv2a_vsh_ready(const Nv2aVshDraw *d) { (void)d; return 0; }
-int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d) { (void)d; return 0; }
+int nv2a_vsh_glsl(const vshcpu_insn *p, int n, uint16_t inputs, const uint8_t kind[16],
+                  char *buf, int cap);
+
+#define VP_CACHE 1024
+#define VP_SLOTS (VP_CACHE * 2)
+#define VP_LINKS 4096
+#define VP_LINK_SLOTS (VP_LINKS * 2)
+static struct { unsigned long long key; GLuint vs; int used; } s_vp[VP_SLOTS];
+static struct { unsigned long long key; GLuint prog; int used; } s_vpl[VP_LINK_SLOTS];
+static int s_nvp, s_nvpl;
+static GLuint s_vp_vao, s_vp_cubo, s_vp_pubo;
+static unsigned s_vp_enabled, s_vp_divisor;     /* attribute arrays on, instanced */
+static float s_vp_c[192][4];
+static int s_vp_c_valid;
+static struct { unsigned long long hash; uint8_t kind[16]; int slot; } s_vp_last = { 0, { 0 }, -1 };
+static struct { GLuint vs; int ps; GLuint prog; } s_vpl_last;
+
+static void vp_init(void)
+{
+    glGenVertexArrays(1, &s_vp_vao);
+    glBindVertexArray(s_vp_vao);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_ib_ring);
+    glGenBuffers(1, &s_vp_cubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, s_vp_cubo);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof s_vp_c, NULL, GL_DYNAMIC_DRAW);
+    glGenBuffers(1, &s_vp_pubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, s_vp_pubo);
+    glBufferData(GL_UNIFORM_BUFFER, 21 * 16, NULL, GL_STREAM_DRAW);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    s_vp_enabled = s_vp_divisor = 0;
+    s_vp_c_valid = 0;
+}
+
+static void vp_shutdown(void)
+{
+    int i;
+    for (i = 0; i < VP_LINK_SLOTS; i++) if (s_vpl[i].prog) glDeleteProgram(s_vpl[i].prog);
+    for (i = 0; i < VP_SLOTS; i++) if (s_vp[i].vs) glDeleteShader(s_vp[i].vs);
+    memset(s_vp, 0, sizeof s_vp);
+    memset(s_vpl, 0, sizeof s_vpl);
+    s_nvp = s_nvpl = 0;
+    s_vp_last.slot = -1;
+    memset(&s_vpl_last, 0, sizeof s_vpl_last);
+    if (s_vp_vao) glDeleteVertexArrays(1, &s_vp_vao);
+    if (s_vp_cubo) glDeleteBuffers(1, &s_vp_cubo);
+    if (s_vp_pubo) glDeleteBuffers(1, &s_vp_pubo);
+    s_vp_vao = s_vp_cubo = s_vp_pubo = 0;
+}
+
+static unsigned long long vp_fnv(unsigned long long h, const void *p, size_t n)
+{
+    const uint8_t *b = (const uint8_t *)p;
+    while (n--) { h ^= *b++; h *= 1099511628211ull; }
+    return h;
+}
+
+static unsigned vp_hash(unsigned long long key, unsigned mask)
+{
+    return (unsigned)((key ^ (key >> 29) ^ (key >> 47)) & mask);
+}
+
+/* The vertex shader of this draw's program and input kinds; 0 if it does
+ * not compile (remembered, so the program stays on the CPU). */
+static GLuint vp_shader(const Nv2aVshDraw *d)
+{
+    static char src[262144];
+    uint8_t kind[16];
+    unsigned long long key;
+    unsigned h;
+    int a, n, len;
+    Uint64 t0;
+
+    for (a = 0; a < 16; a++) kind[a] = (d->inputs & (1u << a)) ? d->attr[a].kind : 0xFF;
+    if (s_vp_last.slot >= 0 && s_vp_last.hash == d->prog_hash && !memcmp(s_vp_last.kind, kind, 16))
+        return s_vp[s_vp_last.slot].vs;
+    key = vp_fnv(d->prog_hash, kind, 16);
+    h = vp_hash(key, VP_SLOTS - 1);
+    for (n = 0; n < VP_SLOTS; n++, h = (h + 1) & (VP_SLOTS - 1)) {
+        if (!s_vp[h].used) break;
+        if (s_vp[h].key == key) goto found;
+    }
+    if (n == VP_SLOTS || s_nvp >= VP_CACHE) return 0;
+    s_vp[h].key = key;
+    s_vp[h].used = 1;
+    s_vp[h].vs = 0;
+    s_nvp++;
+    len = nv2a_vsh_glsl(d->prog, d->prog_len, d->inputs, kind, src, (int)sizeof src);
+    if (len > 0) {
+        t0 = SDL_GetPerformanceCounter();
+        s_vp[h].vs = compile(GL_VERTEX_SHADER, src, len, "nv2a vertex program");
+        g_nv_compiles++;
+        g_nv_compile_ms += (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 /
+                           (double)SDL_GetPerformanceFrequency();
+        if (!s_vp[h].vs) {
+            static int dumped;
+            if (dumped++ < 2) fprintf(stderr, "[NV2A-VSH] vertex program %016llX source:\n%.*s\n", key, len, src);
+        }
+    }
+found:
+    s_vp_last.hash = d->prog_hash;
+    memcpy(s_vp_last.kind, kind, 16);
+    s_vp_last.slot = (int)h;
+    return s_vp[h].vs;
+}
+
+/* The program of vertex shader `vs` and pixel-shader slot `ps`. */
+static GLuint vp_program(GLuint vs, int ps)
+{
+    static const char *const names[4] = { "tex0", "tex1", "tex2", "tex3" };
+    unsigned long long key = ((unsigned long long)vs << 32) ^ (unsigned long long)(unsigned)ps;
+    unsigned h = vp_hash(key * 0x9E3779B97F4A7C15ull, VP_LINK_SLOTS - 1);
+    GLuint prog, blk;
+    int n;
+
+    if (s_vpl_last.prog && s_vpl_last.vs == vs && s_vpl_last.ps == ps) return s_vpl_last.prog;
+    for (n = 0; n < VP_LINK_SLOTS; n++, h = (h + 1) & (VP_LINK_SLOTS - 1)) {
+        if (!s_vpl[h].used) break;
+        if (s_vpl[h].key == key) {
+            prog = s_vpl[h].prog;
+            goto done;
+        }
+    }
+    if (n == VP_LINK_SLOTS || s_nvpl >= VP_LINKS) return 0;
+    prog = link(vs, s_ps[ps].fs, "nv2a program");
+    s_vpl[h].key = key;
+    s_vpl[h].prog = prog;
+    s_vpl[h].used = 1;
+    s_nvpl++;
+    if (prog) {
+        if ((blk = glGetUniformBlockIndex(prog, "PshConsts")) != GL_INVALID_INDEX) glUniformBlockBinding(prog, blk, 0);
+        if ((blk = glGetUniformBlockIndex(prog, "NvConsts")) != GL_INVALID_INDEX) glUniformBlockBinding(prog, blk, 1);
+        if ((blk = glGetUniformBlockIndex(prog, "NvParams")) != GL_INVALID_INDEX) glUniformBlockBinding(prog, blk, 2);
+        bind_samplers(prog, names);
+    }
+done:
+    if (prog) { s_vpl_last.vs = vs; s_vpl_last.ps = ps; s_vpl_last.prog = prog; }
+    return prog;
+}
+
+/* GL attribute layout of a DXGI element format (nv2a_dxgi_shim.h numbers). */
+static int vp_format(uint32_t f, GLint *size, GLenum *type, GLboolean *norm, int *integer)
+{
+    *norm = GL_FALSE;
+    *integer = 0;
+    switch (f) {
+    case 41: *size = 1; *type = GL_FLOAT; break;                 /* R32_FLOAT */
+    case 16: *size = 2; *type = GL_FLOAT; break;                 /* R32G32_FLOAT */
+    case 6:  *size = 3; *type = GL_FLOAT; break;                 /* R32G32B32_FLOAT */
+    case 2:  *size = 4; *type = GL_FLOAT; break;                 /* R32G32B32A32_FLOAT */
+    case 61: *size = 1; *type = GL_UNSIGNED_BYTE; *norm = GL_TRUE; break;   /* R8_UNORM */
+    case 49: *size = 2; *type = GL_UNSIGNED_BYTE; *norm = GL_TRUE; break;   /* R8G8_UNORM */
+    case 28: *size = 4; *type = GL_UNSIGNED_BYTE; *norm = GL_TRUE; break;   /* R8G8B8A8_UNORM */
+    case 87: *size = GL_BGRA; *type = GL_UNSIGNED_BYTE; *norm = GL_TRUE; break; /* B8G8R8A8_UNORM */
+    case 58: *size = 1; *type = GL_SHORT; *norm = GL_TRUE; break;           /* R16_SNORM */
+    case 37: *size = 2; *type = GL_SHORT; *norm = GL_TRUE; break;           /* R16G16_SNORM */
+    case 13: *size = 4; *type = GL_SHORT; *norm = GL_TRUE; break;           /* R16G16B16A16_SNORM */
+    case 59: *size = 1; *type = GL_SHORT; *integer = 1; break;              /* R16_SINT */
+    case 38: *size = 2; *type = GL_SHORT; *integer = 1; break;              /* R16G16_SINT */
+    case 14: *size = 4; *type = GL_SHORT; *integer = 1; break;              /* R16G16B16A16_SINT */
+    case 42: *size = 1; *type = GL_UNSIGNED_INT; *integer = 1; break;       /* R32_UINT */
+    default: return 0;
+    }
+    return 1;
+}
+
+int d3d8_nv2a_vsh_ready(const Nv2aVshDraw *d)
+{
+    int a;
+    GLint size;
+    GLenum type;
+    GLboolean norm;
+    int integer;
+    if (!g_gld.initialized || !gld_on_gl_thread() || !s_vp_vao) return 0;
+    if (d->topology == D3DPT_POINTLIST) return 0;
+    for (a = 0; a < 16; a++)
+        if ((d->inputs & (1u << a)) && (d->attr[a].kind & 0x0F) != NV2A_VSH_IN_CONST &&
+            !vp_format(d->attr[a].dxgi_format, &size, &type, &norm, &integer))
+            return 0;
+    return vp_shader(d) != 0;
+}
+
+int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
+{
+    struct { const uint8_t *base; uint32_t stride, size; long off; } grp[16];
+    int gi[16];
+    struct { float screen[4], fog[4], flags[4], vattr[16][4], point[4], hud[4]; } params;
+    int slot = ps_slot(d->ps_key, 0);
+    int a, g, ngrp = 0;
+    unsigned enabled = 0, divisor = 0;
+    uint16_t done = 0;
+    GLuint vs, prog;
+    GLenum mode;
+    long ioff;
+
+    if (!g_gld.initialized || !gld_on_gl_thread() || !s_vp_vao || slot < 0 || !s_ps[slot].fs ||
+        !d->nindices)
+        return 0;
+    switch (d->topology) {
+    case D3DPT_TRIANGLELIST: mode = GL_TRIANGLES;  break;
+    case D3DPT_LINELIST:     mode = GL_LINES;      break;
+    case D3DPT_LINESTRIP:    mode = GL_LINE_STRIP; break;
+    default: return 0;
+    }
+    if (!(vs = vp_shader(d)) || !(prog = vp_program(vs, slot))) return 0;
+
+    /* Arrays interleaved in one (same stride, within one vertex of each
+     * other) share an upload; taken in address order so each group starts
+     * at its lowest element. */
+    for (;;) {
+        int best = -1;
+        for (a = 0; a < 16; a++)
+            if ((d->inputs & (1u << a)) && !(done & (1u << a)) &&
+                (d->attr[a].kind & 0x0F) != NV2A_VSH_IN_CONST &&
+                (best < 0 || d->attr[a].base < d->attr[best].base))
+                best = a;
+        if (best < 0) break;
+        done |= (uint16_t)(1u << best);
+        a = best;
+        for (g = 0; g < ngrp; g++)
+            if (grp[g].stride == d->attr[a].stride && grp[g].stride &&
+                d->attr[a].base >= grp[g].base &&
+                (uint32_t)(d->attr[a].base - grp[g].base) < grp[g].stride)
+                break;
+        if (g == ngrp) {
+            grp[g].base = d->attr[a].base;
+            grp[g].stride = d->attr[a].stride;
+            grp[g].size = 0;
+            ngrp++;
+        }
+        {
+            uint32_t end = (uint32_t)(d->attr[a].base - grp[g].base) + d->attr[a].bytes;
+            if (end > grp[g].size) grp[g].size = end;
+        }
+        gi[a] = g;
+    }
+
+    gld_states_apply();                 /* blend, depth, stencil, scissor, samplers */
+    {
+        int cull = (d->raster >> 1) & 3;
+        apply_raster(cull == 1 || cull == 2, cull == 1 ? GL_FRONT : GL_BACK,
+                     (d->raster & 8) ? GL_CCW : GL_CW, (d->raster & 1) ? 0 : 1, GL_FILL);
+    }
+    use_program(prog);
+    bind_vao(s_vp_vao);
+
+    glBindBuffer(GL_ARRAY_BUFFER, s_vb_ring);
+    {   /* all groups in one stretch of the ring: a wrap between them would
+         * leave the earlier ones in the orphaned storage */
+        size_t total = 0;
+        for (g = 0; g < ngrp; g++) total += ((size_t)grp[g].size + 15u) & ~(size_t)15u;
+        if (total > VB_RING) return 0;
+        if (((s_vb_off + 15u) & ~(size_t)15u) + total > VB_RING) {
+            glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)VB_RING, NULL, GL_STREAM_DRAW);
+            s_vb_off = 0;
+        }
+    }
+    for (g = 0; g < ngrp; g++) {
+        grp[g].off = ring_put(GL_ARRAY_BUFFER, VB_RING, &s_vb_off, grp[g].base, grp[g].size, 16);
+        if (grp[g].off < 0) return 0;
+    }
+    for (a = 0; a < 16; a++) {
+        GLint size;
+        GLenum type;
+        GLboolean norm;
+        int integer;
+        const void *ptr;
+        if (!(d->inputs & (1u << a)) || (d->attr[a].kind & 0x0F) == NV2A_VSH_IN_CONST) continue;
+        if (!vp_format(d->attr[a].dxgi_format, &size, &type, &norm, &integer)) return 0;
+        g = gi[a];
+        ptr = (const void *)(uintptr_t)(grp[g].off + (d->attr[a].base - grp[g].base));
+        if (integer) glVertexAttribIPointer((GLuint)a, size, type, (GLsizei)d->attr[a].stride, ptr);
+        else glVertexAttribPointer((GLuint)a, size, type, norm, (GLsizei)d->attr[a].stride, ptr);
+        enabled |= 1u << a;
+        if (!d->attr[a].stride) divisor |= 1u << a;
+    }
+    for (a = 0; a < 16; a++) {
+        unsigned bit = 1u << a;
+        if ((enabled ^ s_vp_enabled) & bit) {
+            if (enabled & bit) glEnableVertexAttribArray((GLuint)a);
+            else glDisableVertexAttribArray((GLuint)a);
+        }
+        if ((divisor ^ s_vp_divisor) & bit) glVertexAttribDivisor((GLuint)a, (divisor & bit) ? 1 : 0);
+    }
+    s_vp_enabled = enabled;
+    s_vp_divisor = divisor;
+    ioff = ring_put(GL_ELEMENT_ARRAY_BUFFER, IB_RING, &s_ib_off, d->indices, (size_t)d->nindices * 4, 4);
+    if (ioff < 0) return 0;
+
+    if (!s_vp_c_valid || memcmp(s_vp_c, d->vconst, sizeof s_vp_c)) {
+        memcpy(s_vp_c, d->vconst, sizeof s_vp_c);
+        glBindBuffer(GL_UNIFORM_BUFFER, s_vp_cubo);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof s_vp_c, s_vp_c);
+        s_vp_c_valid = 1;
+    }
+    memset(&params, 0, sizeof params);
+    params.screen[0] = d->screen_w;
+    params.screen[1] = d->screen_h;
+    params.screen[2] = d->clip_max;
+    params.screen[3] = d->point_zoom;
+    params.fog[0] = (float)d->fog_mode;
+    params.fog[1] = d->fog_p0;
+    params.fog[2] = d->fog_p1;
+    params.flags[0] = d->specular ? 1.0f : 0.0f;
+    params.flags[1] = d->spec_alpha ? 1.0f : 0.0f;
+    params.hud[0] = d->hud_kx;
+    params.hud[1] = d->hud_ax;
+    params.hud[2] = d->hud_ky;
+    params.hud[3] = d->hud_ay;
+    if (d->attr_const) memcpy(params.vattr, d->attr_const, sizeof params.vattr);
+    glBindBuffer(GL_UNIFORM_BUFFER, s_vp_pubo);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof params, &params, GL_STREAM_DRAW);
+    glBindBuffer(GL_UNIFORM_BUFFER, s_nv_ubo);
+    glBufferData(GL_UNIFORM_BUFFER, (GLsizeiptr)(d->ps_consts_size < 512 ? 512 : d->ps_consts_size), NULL, GL_STREAM_DRAW);
+    if (d->ps_consts && d->ps_consts_size)
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, (GLsizeiptr)d->ps_consts_size, d->ps_consts);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, s_nv_ubo);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 1, s_vp_cubo);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 2, s_vp_pubo);
+
+    if (g_gpuprof_on) gpuprof_draw_begin();
+    if (divisor)
+        glDrawElementsInstanced(mode, (GLsizei)d->nindices, GL_UNSIGNED_INT, (const void *)(uintptr_t)ioff, 1);
+    else
+        glDrawElements(mode, (GLsizei)d->nindices, GL_UNSIGNED_INT, (const void *)(uintptr_t)ioff);
+    if (g_gpuprof_on) gpuprof_draw_end();
+    gl_check("nv2a_draw_program_gpu");
+    return 1;
+}
+
 int d3d8_points_gpu_on(void) { return 0; }       /* point sprites from the CPU path */
 int d3d8_points_check_on(void) { return 0; }     /* diagnostic of the GPU point path */
 void d3d8_nv2a_points_expect(const void *verts, unsigned n, unsigned stride)
