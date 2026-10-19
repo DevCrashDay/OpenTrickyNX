@@ -12,11 +12,17 @@
 #define perf_cycles() __rdtsc()
 #else
 /* The generic timer stands in for the TSC: a fixed-rate counter, so the
- * "cycles" it reports are timer ticks (19.2 MHz on the Switch). */
+ * "cycles" it reports are timer ticks (19.2 MHz on the Switch). Horizon
+ * traps reads of the virtual count (cntvct_el0) and lets programs read the
+ * physical one, as libnx's armGetSystemTick does. */
 static inline unsigned long long perf_cycles(void)
 {
     unsigned long long v;
+#if defined(__SWITCH__)
+    __asm__ volatile("mrs %0, cntpct_el0" : "=r"(v));
+#else
     __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
+#endif
     return v;
 }
 #endif
