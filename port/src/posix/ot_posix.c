@@ -707,15 +707,21 @@ static const devoptab_t s_log_dev = { .name = "log", .write_r = log_write_r, .fs
 
 static void on_exit_log(void) { printf("[SSX Tricky] exit\n"); log_flush(); if (s_log_fd >= 0) fsync(s_log_fd); }
 
-static void *log_sync_thread(void *arg)
+void xbox_log_commit(void);
+
+/* Above the game's threads: a pthread gets the lowest priority, and with the
+ * game keeping cores 0-2 busy it may never run, so nothing after the first
+ * lines would reach the card (seen started as an application from the
+ * home menu). It sleeps nearly all the time. */
+static void log_sync_thread(void *arg)
 {
     (void)arg;
     for (;;) {
         svcSleepThread(250000000LL);
         log_flush();
         if (s_log_fd >= 0) fsync(s_log_fd);
+        xbox_log_commit();
     }
-    return NULL;
 }
 #endif
 
@@ -746,8 +752,9 @@ void ot_host_init(void)
     printf("SSX Tricky (OpenTrickyNX) starting: %s\n", s_argc > 0 ? s_argv[0] : "?");
     ot_switch_env_load();
     {
-        pthread_t t;
-        if (pthread_create(&t, NULL, log_sync_thread, NULL) == 0) pthread_detach(t);
+        static Thread t;
+        if (R_SUCCEEDED(threadCreate(&t, log_sync_thread, NULL, NULL, 0x4000, 0x2A, 2)))
+            threadStart(&t);
     }
     signal(SIGABRT, on_abort);
     atexit(on_exit_log);

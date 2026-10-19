@@ -274,7 +274,10 @@ static DWORD WINAPI prof_main(LPVOID arg)
             double cpu;
             t->cpu1 = thread_cpu(t->h);
             cpu = (double)(t->cpu1 - t->cpu0) / 1e7 / wall * 100.0;
-            if (!t->samples) continue;
+            if (!t->samples) {
+            fprintf(stderr, "[PROFILE] thread %d (core %d): no samples (%u empty, %u refused)\n", i, t->core, t->zero, t->lost);
+            continue;
+        }
             if (cpu < 2.0 && !s_all) continue;             /* idle threads, unless ,all */
             fprintf(stderr, "[PROFILE] thread %lu  cpu %.1f%%  samples %u\n",
                     (unsigned long)t->tid, cpu, t->samples);
@@ -341,7 +344,8 @@ void xbox_profile_start_from_env(void)
 typedef struct {
     Handle   h;
     int      core;
-    unsigned samples, lost;
+    unsigned samples, lost, zero;
+    uint64_t first_pc[3];
     unsigned nsites;
     struct { uint32_t off; unsigned n; } *site;
 } SwProfThread;
@@ -456,7 +460,10 @@ static void sw_report(double secs)
         SwProfThread *t = &s_sw[i];
         SwRow *rows;
         unsigned j, nr = 0, shown = 0;
-        if (!t->samples) continue;
+        if (!t->samples) {
+            fprintf(stderr, "[PROFILE] thread %d (core %d): no samples (%u empty, %u refused)\n", i, t->core, t->zero, t->lost);
+            continue;
+        }
         rows = (SwRow *)calloc(t->nsites ? t->nsites : 1, sizeof *rows);
         if (!rows) continue;
         for (j = 0; j < MAX_SITES; j++) {
@@ -464,14 +471,21 @@ static void sw_report(double secs)
             uint32_t key;
             if (!t->site[j].n) continue;
             key = t->site[j].off;
-            if (s_nsyms) { int k = sym_find(key); key = k >= 0 ? (uint32_t)k : 0xFFFFFFFFu; }
+            if (s_nsyms) {
+                int k = key != 0xFFFFFFFFu ? sym_find(key) : -1;
+                /* past the last function: not the program's code */
+                if (k == s_nsyms - 1 && key - s_syms[k].addr > 0x10000) k = -1;
+                key = k >= 0 ? (uint32_t)k : 0xFFFFFFFFu;
+            }
             for (r = 0; r < nr && rows[r].key != key; r++) { }
             if (r == nr) { rows[nr].key = key; rows[nr].n = 0; nr++; }
             rows[r].n += t->site[j].n;
         }
         qsort(rows, nr, sizeof *rows, row_cmp);
-        fprintf(stderr, "[PROFILE] thread %d (core %d, %s): %u samples\n", i, t->core,
-                t->core >= 0 && t->core < 3 ? role[t->core] : "?", t->samples);
+        fprintf(stderr, "[PROFILE] thread %d (core %d, %s): %u samples (%u empty, %u refused), program at 0x%lx, first pc 0x%lx 0x%lx 0x%lx\n",
+                i, t->core, t->core >= 0 && t->core < 3 ? role[t->core] : "?", t->samples, t->zero, t->lost,
+                (unsigned long)(uintptr_t)__start__, (unsigned long)t->first_pc[0],
+                (unsigned long)t->first_pc[1], (unsigned long)t->first_pc[2]);
         for (j = 0; j < nr && shown < 30; j++) {
             double pc = 100.0 * rows[j].n / t->samples;
             if (pc < 0.5) break;
@@ -506,10 +520,18 @@ static void sw_prof_main(void *arg)
             ThreadContext ctx;
             if (!t->site) continue;
             if (R_FAILED(svcSetThreadActivity(t->h, ThreadActivity_Paused))) { t->lost++; continue; }
-            if (R_SUCCEEDED(svcGetThreadContext3(&ctx, t->h))) {
+            /* The pause takes effect when the thread next leaves its core;
+             * until then the context reads back empty: ask again. */
+            int tries = 0;
+            Result rc;
+            while (R_SUCCEEDED(rc = svcGetThreadContext3(&ctx, t->h)) && !ctx.pc.x && ++tries < 20)
+                svcSleepThread(20000);
+            if (R_SUCCEEDED(rc)) {
                 svcSetThreadActivity(t->h, ThreadActivity_Runnable);
+                if (!ctx.pc.x) { t->zero++; continue; }
+                if (t->samples < 3) t->first_pc[t->samples] = ctx.pc.x;
                 t->samples++;
-                sw_record(t, (uint32_t)(ctx.pc.x - base));
+                sw_record(t, ctx.pc.x - base < 0x100000000ull ? (uint32_t)(ctx.pc.x - base) : 0xFFFFFFFFu);
             } else {
                 svcSetThreadActivity(t->h, ThreadActivity_Runnable);
                 t->lost++;
