@@ -110,7 +110,9 @@ echo "== [4/4] dist/switch/opentricky"
 OUT=dist/switch/opentricky
 mkdir -p "$OUT"
 cp "$BUILD/SSX Tricky.nro" "$OUT/"
+# The settings file, unless one is there already (it may hold your changes).
+[ -f "$OUT/SSX Tricky env.txt" ] || cp "port/switch/SSX Tricky env.txt" "$OUT/"
 echo
-echo "Done: $OUT/SSX Tricky.nro"
+echo "Done: $OUT/SSX Tricky.nro (settings: $OUT/SSX Tricky env.txt)"
 echo "Copy $OUT to sdmc:/switch/ on your SD card, put your disc image (.iso) in it,"
 echo "and start it from the Homebrew Menu opened over a game (hold R), see docs/switch.md."

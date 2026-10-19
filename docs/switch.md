@@ -64,7 +64,7 @@ All in `sdmc:/switch/opentricky/`:
 | `game/` | Your extracted disc (`default.xbe` and the `data` folder). |
 | `*.iso` | Or, without `game/`: your disc image, read in place. |
 | `settings.ini` | Optional: the settings, the same file as on Windows. Not created by the game; write only the lines you change, under their section, e.g. `[Display]` then the key. |
-| `SSX Tricky env.txt` | Optional: `KEY=VALUE` lines read at start (see below). They win over `settings.ini`. |
+| `SSX Tricky env.txt` | Settings read at start (see below), copied here by `build_switch.sh` with every option listed. They win over `settings.ini`. |
 | `Saves/` | Saved games (the Xbox hard disk's save area). |
 
 ### SSX Tricky env.txt

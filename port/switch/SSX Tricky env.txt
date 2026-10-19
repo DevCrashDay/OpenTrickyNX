@@ -1,0 +1,62 @@
+# SSX Tricky env.txt -- settings for the Switch build, read when the game starts.
+#
+# Keep this file beside "SSX Tricky.nro". One KEY=VALUE per line; a line that
+# starts with # is ignored. Every setting here is optional: remove the # in
+# front of a line to use it. A line here wins over the same setting in
+# settings.ini. The game writes what it read at the top of SSX Tricky.log.
+
+# ── Clocks ──────────────────────────────────────────────────────────
+# MHz; 0 keeps the system's (CPU 1020). Higher clocks: faster, but more heat
+# and battery. The system's clocks come back when the game closes. While
+# sys-clk or Horizon OC runs, its profile decides, unless OT_CLOCK_FORCE=1.
+OT_CPU_MHZ=1785
+OT_GPU_MHZ=768
+OT_MEM_MHZ=1600
+#OT_CLOCK_FORCE=1
+
+# ── Speed and troubleshooting ───────────────────────────────────────
+# 1: a timing summary in the log every 2 seconds (where the frame time goes).
+#XBOX_PERF=1
+# 0: run the game's vertex programs on the CPU, as before (slower; use it if
+# 3D scenes look wrong with the default GPU path).
+#XBOX_VSH_GPU=1
+# 1: report OpenGL errors in the log.
+#XBOX_GL_DEBUG=1
+
+# ── Picture ─────────────────────────────────────────────────────────
+# Frame rate limit: 60, 30, ... or 0 for none.
+#XBOX_FPS_CAP=60
+# legacy, off, vsync or adaptive.
+#XBOX_SYNC=vsync
+# Draw distance: original, far (x1.5) or max (x2).
+#XBOX_DRAW_DISTANCE=original
+# Sharper textures far away: 0 (as on the Xbox), 2, 4, 8 or 16.
+#XBOX_ANISO=0
+# Menus: 4:3 (the original layout, centred) or 16:9 (the game's widescreen layout).
+#XBOX_WIDE_MENUS=4:3
+# Off on the Switch by default; they cost frame time.
+#XBOX_SMAA=0
+#XBOX_SOFT_SHADOWS=0
+#XBOX_FPS_SMOOTH_LEGS=0
+# Frames in between above 60 (1) or each game step as is (0).
+#XBOX_FPS_INTERP=1
+# Fixes that make the picture match the Xbox (fog volumes, lens flares, board
+# tops, the title's gamma): 1 on, 0 off.
+#XBOX_FIX_CULLWIND=1
+#XBOX_FIX_OCCLUSION=1
+#XBOX_FIX_TEXPASSTHRU=1
+#XBOX_FIX_GAMMA=1
+
+# ── Sound ───────────────────────────────────────────────────────────
+# auto, stereo or 5.1.
+#XBOX_AUDIO_OUTPUT=auto
+# Delay in buffers: 4 (short, may crackle), 8 (normal), 12, 16.
+#XBOX_AUDIO_QUEUE=8
+
+# ── Game ────────────────────────────────────────────────────────────
+# Button pictures: auto, modern, playstation or ps2.
+#XBOX_BUTTON_ICONS=auto
+# 1: the game's own unlock-all cheat, with a save folder of its own.
+#XBOX_UNLOCK_ALL=0
+# 1: keep a backup copy of the save.
+#XBOX_SAVE_BACKUP=1
