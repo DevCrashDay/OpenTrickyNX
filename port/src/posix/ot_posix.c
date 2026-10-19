@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <signal.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -637,7 +638,22 @@ static void on_abort(int sig)
 }
 #endif
 
-static void on_exit_log(void) { printf("[SSX Tricky] exit\n"); }
+#ifdef __SWITCH__
+static void on_exit_log(void) { printf("[SSX Tricky] exit\n"); fsync(fileno(stdout)); }
+
+/* The SD card's file only grows on the card when its data is committed: a
+ * program that crashes leaves a log cut short. Committed four times a second. */
+static void *log_sync_thread(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        svcSleepThread(250000000LL);
+        fsync(fileno(stdout));
+    }
+    return NULL;
+}
+#endif
+
 
 void ot_host_init(void)
 {
@@ -662,6 +678,10 @@ void ot_host_init(void)
         }
     }
     printf("SSX Tricky (OpenTrickyNX) starting: %s\n", s_argc > 0 ? s_argv[0] : "?");
+    {
+        pthread_t t;
+        if (pthread_create(&t, NULL, log_sync_thread, NULL) == 0) pthread_detach(t);
+    }
     signal(SIGABRT, on_abort);
     atexit(on_exit_log);
 

@@ -21,6 +21,7 @@
 
 #if defined(__SWITCH__)
 #include <switch.h>
+#include <unistd.h>
 #else
 #include <signal.h>
 #include <ucontext.h>
@@ -382,6 +383,42 @@ static uint64_t *nx_gpr(void *c, int r)
 
 static uint64_t *nx_sp(void *c) { return &((nx_ctx *)c)->frame->sp; }
 
+/* A crash that is not a trapped access: where it happened, in the log, before
+ * the system ends the program. Addresses are also given as offsets into the
+ * program (from _start), which addr2line maps to a function in the .elf. */
+extern char _start[];
+static void report_crash(uint32_t desc, const ThreadExceptionFrameA64 *frame, const uint64_t *saved)
+{
+    static int reported;
+    const uintptr_t base = (uintptr_t)_start;
+    int i;
+    if (reported++) return;
+    fprintf(stderr, "\n[SSX Tricky] crash: exception %u, pc 0x%llX (program +0x%llX), lr 0x%llX (program +0x%llX)\n"
+                    "  fault address 0x%llX, esr 0x%llX, sp 0x%llX\n",
+            desc, (unsigned long long)frame->elr_el1, (unsigned long long)(frame->elr_el1 - base),
+            (unsigned long long)frame->lr, (unsigned long long)(frame->lr - base),
+            (unsigned long long)frame->far, (unsigned long long)frame->esr,
+            (unsigned long long)frame->sp);
+    for (i = 0; i <= 8; i++)
+        fprintf(stderr, "  x%d 0x%llX\n", i, (unsigned long long)frame->cpu_gprs[i]);
+    for (i = 9; i <= 29; i++)
+        fprintf(stderr, "  x%d 0x%llX\n", i, (unsigned long long)saved[i - 9]);
+    /* A few return addresses from the stack (frame-pointer chain). */
+    {
+        const uint64_t *fp = (const uint64_t *)(uintptr_t)saved[29 - 9];
+        for (i = 0; i < 16 && fp && ((uintptr_t)fp & 7) == 0; i++) {
+            uint64_t ret = fp[1];
+            if (!ret) break;
+            fprintf(stderr, "  called from 0x%llX (program +0x%llX)\n",
+                    (unsigned long long)ret, (unsigned long long)(ret - base));
+            if ((const uint64_t *)(uintptr_t)fp[0] <= fp) break;
+            fp = (const uint64_t *)(uintptr_t)fp[0];
+        }
+    }
+    fflush(stderr);
+    fsync(fileno(stderr));
+}
+
 /* Returns 1 when the exception was an access to a trapped range and has
  * been emulated (pc advanced); 0 to fall back to libnx's default. */
 int host_fault_nx_dispatch(uint32_t desc, ThreadExceptionFrameA64 *frame, uint64_t *saved)
@@ -392,12 +429,15 @@ int host_fault_nx_dispatch(uint32_t desc, ThreadExceptionFrameA64 *frame, uint64
     uint32_t insn;
 
     /* A data abort arrives as ThreadExceptionDesc_Other (EC 0x24). */
-    if (desc != ThreadExceptionDesc_Other) return 0;
     addr = (uintptr_t)frame->far;
-    if (!host_trap_covers(addr)) return 0;
+    if (desc != ThreadExceptionDesc_Other || !host_trap_covers(addr)) {
+        report_crash(desc, frame, saved);
+        return 0;
+    }
     insn = *(const uint32_t *)frame->elr_el1;
     if (!a64_emulate(insn, addr, &rf)) {
         report_decode_fail((uintptr_t)frame->elr_el1, addr, (const uint8_t *)frame->elr_el1, 4);
+        report_crash(desc, frame, saved);
         return 0;
     }
     frame->elr_el1 += 4;
