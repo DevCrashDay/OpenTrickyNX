@@ -22,6 +22,7 @@
  */
 #include "d3d8_gl_internal.h"
 #include "d3d8_gpuprof.h"
+#include "../kernel/xbox_perf.h"
 #include "d3d8_nv2a_vsh.h"
 #include <SDL.h>
 #include <math.h>
@@ -1533,6 +1534,7 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     GLuint vs, prog;
     GLenum mode;
     long ioff;
+    double pt = 0.0;                    /* XBOX_PERF sub-zones */
 
     if (!g_gld.initialized || !gld_on_gl_thread() || !s_vp_vao || slot < 0 || !s_ps[slot].fs ||
         !d->nindices)
@@ -1576,6 +1578,7 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
         gi[a] = g;
     }
 
+    if (g_perf_on) pt = perf_now();
     gld_states_apply();                 /* blend, depth, stencil, scissor, samplers */
     {
         int cull = (d->raster >> 1) & 3;
@@ -1585,6 +1588,7 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     use_program(prog);
     bind_vao(s_vp_vao);
 
+    if (g_perf_on) { double t = perf_now(); perf_add(PZ_DSTATE, t - pt); pt = t; }
     glBindBuffer(GL_ARRAY_BUFFER, s_vb_ring);
     {   /* all groups in one stretch of the ring: a wrap between them would
          * leave the earlier ones in the orphaned storage */
@@ -1627,6 +1631,7 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     s_vp_divisor = divisor;
     ioff = ring_put(GL_ELEMENT_ARRAY_BUFFER, IB_RING, &s_ib_off, d->indices, (size_t)d->nindices * 4, 4);
     if (ioff < 0) return 0;
+    if (g_perf_on) { double t = perf_now(); perf_add(PZ_DUP, t - pt); pt = t; }
 
     if (!s_vp_c_valid || memcmp(s_vp_c, d->vconst, sizeof s_vp_c)) {
         memcpy(s_vp_c, d->vconst, sizeof s_vp_c);
@@ -1658,6 +1663,7 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, s_nv_ubo);
     glBindBufferBase(GL_UNIFORM_BUFFER, 1, s_vp_cubo);
     glBindBufferBase(GL_UNIFORM_BUFFER, 2, s_vp_pubo);
+    if (g_perf_on) { double t = perf_now(); perf_add(PZ_DCB, t - pt); pt = t; }
 
     if (g_gpuprof_on) gpuprof_draw_begin();
     if (divisor)
@@ -1666,6 +1672,7 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
         glDrawElements(mode, (GLsizei)d->nindices, GL_UNSIGNED_INT, (const void *)(uintptr_t)ioff);
     if (g_gpuprof_on) gpuprof_draw_end();
     gl_check("nv2a_draw_program_gpu");
+    if (g_perf_on) { perf_add(PZ_DDRAW, perf_now() - pt); perf_gpu_draw(0, (unsigned)ngrp); }
     return 1;
 }
 

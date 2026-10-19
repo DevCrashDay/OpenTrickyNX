@@ -19,6 +19,7 @@
  */
 #include "d3d8_gl_internal.h"
 #include "d3d8_gpuprof.h"
+#include "../kernel/xbox_perf.h"
 #include <SDL.h>
 #include <math.h>
 #include <stdio.h>
@@ -1134,7 +1135,24 @@ static int gld_swap_interval(void)
 #endif
 }
 
+static void host_present_impl(void);
+
+/* XBOX_PERF: the present (blit + swap) and the swap alone, then the pump's
+ * per-frame record (no GPU timestamps on this backend). */
+static double s_perf_swap_ms;
 static void host_present(void)
+{
+    double t0;
+    if (!g_perf_on) { host_present_impl(); return; }
+    t0 = perf_now();
+    s_perf_swap_ms = 0.0;
+    host_present_impl();
+    perf_add(PZ_PRESENT, perf_now() - t0);
+    perf_add(PZ_DXGI, s_perf_swap_ms);
+    perf_present_done(0.0);
+}
+
+static void host_present_impl(void)
 {
     GldState *s = &g_gld;
     int dw = 0, dh = 0;
@@ -1194,7 +1212,11 @@ static void host_present(void)
             if (SDL_GL_SetSwapInterval(want) != 0 && want == -1) SDL_GL_SetSwapInterval(1);
         }
     }
-    SDL_GL_SwapWindow(s_win);
+    {
+        double ts = g_perf_on ? perf_now() : 0.0;
+        SDL_GL_SwapWindow(s_win);
+        if (g_perf_on) s_perf_swap_ms = perf_now() - ts;
+    }
     InterlockedIncrement(&s_frames);
     if (s_video_frame) video_present_mark();
     s_video_frame = 0;
