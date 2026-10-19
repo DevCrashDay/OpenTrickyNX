@@ -810,6 +810,8 @@ void xbox_switch_thread_core(int ideal)
 {
     static int on = -1;
     Result rc;
+    extern void xbox_profile_register_thread(int core);
+    xbox_profile_register_thread(ideal);    /* XBOX_PROFILE's sampler */
     if (on < 0) { const char *e = getenv("OT_CORES"); on = !(e && e[0] == '0'); }
     if (!on) return;
     rc = svcSetThreadCoreMask(CUR_THREAD_HANDLE, ideal, 0x7);

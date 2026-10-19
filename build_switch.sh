@@ -173,6 +173,8 @@ echo "== [4/4] dist/switch/opentricky"
 OUT=dist/switch/opentricky
 mkdir -p "$OUT"
 cp "$BUILD/SSX Tricky.nro" "$OUT/"
+# function names for XBOX_PROFILE's report
+[ ! -f "$BUILD/SSX Tricky.sym" ] || cp "$BUILD/SSX Tricky.sym" "$OUT/"
 # The settings file, unless one is there already (it may hold your changes).
 [ -f "$OUT/SSX Tricky env.txt" ] || cp "port/switch/SSX Tricky env.txt" "$OUT/"
 echo

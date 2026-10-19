@@ -38,6 +38,10 @@ OT_MEM_MHZ=1600
 # fb: show the Vulkan frames through the CPU instead of the driver's own
 # display path (slower; for when the Vulkan picture stays black).
 #XBOX_VK_PRESENT=fb
+# Profiler: from 60 s after start, for 20 s, sample where each thread spends
+# its time; the busiest functions go to SSX Tricky.log. Slows the game a
+# little while it samples.
+#XBOX_PROFILE=60,20
 
 # ── Picture ─────────────────────────────────────────────────────────
 # Frame rate limit: 60, 30, ... or 0 for none.

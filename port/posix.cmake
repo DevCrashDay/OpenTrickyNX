@@ -192,4 +192,10 @@ if(NINTENDO_SWITCH)
         NACP ssx_tricky.nacp
         ROMFS "${CMAKE_BINARY_DIR}/romfs"
         ${_nro_icon})
+    # Function names for XBOX_PROFILE's report (xbox_profile.c), read from
+    # next to the .nro: addresses and names only.
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND sh -c "\"$0\" -n --defined-only \"$1\" | grep ' [Tt] ' > \"$2\""
+                "${CMAKE_NM}" "$<TARGET_FILE:${PROJECT_NAME}>" "${CMAKE_BINARY_DIR}/SSX Tricky.sym"
+        VERBATIM)
 endif()

@@ -320,7 +320,220 @@ void xbox_profile_start_from_env(void)
     if (h) CloseHandle(h);
 }
 
-#else /* !_WIN32 */
+#elif defined(__SWITCH__)
+
+/* The Switch: threads that took a core through xbox_switch_thread_core (the
+ * game, the pushbuffer pump, the Win32 threads) are registered here; the
+ * sampler pauses each in turn (svcSetThreadActivity), reads its program
+ * counter (svcGetThreadContext3) and lets it run again, about a thousand
+ * times a second. The report names functions from "SSX Tricky.sym" next to
+ * the .nro (nm's symbol list, written by the build), else gives offsets
+ * into the .elf for addr2line. Same XBOX_PROFILE=START,SECONDS. */
+#include <switch.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+#define MAX_THREADS 32
+#define MAX_SITES   16384               /* per thread, open addressing */
+
+typedef struct {
+    Handle   h;
+    int      core;
+    unsigned samples, lost;
+    unsigned nsites;
+    struct { uint32_t off; unsigned n; } *site;
+} SwProfThread;
+
+extern char __start__[];
+extern int __system_argc;
+extern char **__system_argv;
+
+static SwProfThread s_sw[MAX_THREADS];
+static int s_sw_n;
+static Mutex s_sw_lock;
+static int s_sw_on;                     /* XBOX_PROFILE set */
+
+void xbox_profile_note_stall(long long qpc_start, long long qpc_end)
+{ (void)qpc_start; (void)qpc_end; }
+
+/* Called by every thread that takes a core (xbox_switch_thread_core). */
+void xbox_profile_register_thread(int core)
+{
+    if (!s_sw_on) {
+        const char *e = getenv("XBOX_PROFILE");
+        if (!e || !e[0]) return;
+        s_sw_on = 1;
+    }
+    mutexLock(&s_sw_lock);
+    if (s_sw_n < MAX_THREADS) {
+        s_sw[s_sw_n].h = threadGetCurHandle();
+        s_sw[s_sw_n].core = core;
+        s_sw_n++;
+    }
+    mutexUnlock(&s_sw_lock);
+}
+
+static void sw_record(SwProfThread *t, uint32_t off)
+{
+    unsigned i = (off * 2654435761u) & (MAX_SITES - 1), k;
+    for (k = 0; k < MAX_SITES; k++, i = (i + 1) & (MAX_SITES - 1)) {
+        if (t->site[i].n && t->site[i].off == off) { t->site[i].n++; return; }
+        if (!t->site[i].n) {
+            if (t->nsites >= MAX_SITES * 3 / 4) return;
+            t->site[i].off = off;
+            t->site[i].n = 1;
+            t->nsites++;
+            return;
+        }
+    }
+}
+
+typedef struct { uint32_t addr; char *name; } SwSym;
+static SwSym *s_syms;
+static int s_nsyms;
+
+static int sym_cmp(const void *a, const void *b)
+{
+    uint32_t x = ((const SwSym *)a)->addr, y = ((const SwSym *)b)->addr;
+    return x < y ? -1 : x > y;
+}
+
+/* "ADDR T name" lines of nm, next to the .nro. */
+static void syms_load(void)
+{
+    char path[512], line[512];
+    FILE *f;
+    int cap = 0;
+    const char *nro = __system_argc > 0 ? __system_argv[0] : NULL;
+    const char *slash = nro ? strrchr(nro, '/') : NULL;
+    if (!slash) return;
+    snprintf(path, sizeof path, "%.*s/SSX Tricky.sym", (int)(slash - nro), nro);
+    f = fopen(path, "r");
+    if (!f) { fprintf(stderr, "[PROFILE] no %s: offsets only (addr2line -f -e ssx_tricky.elf)\n", path); return; }
+    while (fgets(line, sizeof line, f)) {
+        unsigned long long a;
+        char type, name[400];
+        if (sscanf(line, "%llx %c %399s", &a, &type, name) != 3 || (type != 'T' && type != 't')) continue;
+        if (s_nsyms == cap) {
+            SwSym *n = (SwSym *)realloc(s_syms, sizeof *n * (size_t)(cap = cap ? cap * 2 : 8192));
+            if (!n) break;
+            s_syms = n;
+        }
+        s_syms[s_nsyms].addr = (uint32_t)a;
+        s_syms[s_nsyms].name = strdup(name);
+        s_nsyms++;
+    }
+    fclose(f);
+    qsort(s_syms, (size_t)s_nsyms, sizeof *s_syms, sym_cmp);
+}
+
+static int sym_find(uint32_t off)
+{
+    int lo = 0, hi = s_nsyms - 1, best = -1;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        if (s_syms[m].addr <= off) { best = m; lo = m + 1; } else hi = m - 1;
+    }
+    return best;
+}
+
+typedef struct { uint32_t key; unsigned n; } SwRow;
+static int row_cmp(const void *a, const void *b)
+{
+    unsigned x = ((const SwRow *)a)->n, y = ((const SwRow *)b)->n;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+
+static void sw_report(double secs)
+{
+    static const char *const role[3] = { "game", "renderer (pushbuffer pump)", "other" };
+    int i;
+    syms_load();
+    fprintf(stderr, "[PROFILE] %.1f s, %d threads%s\n", secs, s_sw_n, s_nsyms ? "" : " (offsets into ssx_tricky.elf)");
+    for (i = 0; i < s_sw_n; i++) {
+        SwProfThread *t = &s_sw[i];
+        SwRow *rows;
+        unsigned j, nr = 0, shown = 0;
+        if (!t->samples) continue;
+        rows = (SwRow *)calloc(t->nsites ? t->nsites : 1, sizeof *rows);
+        if (!rows) continue;
+        for (j = 0; j < MAX_SITES; j++) {
+            unsigned r;
+            uint32_t key;
+            if (!t->site[j].n) continue;
+            key = t->site[j].off;
+            if (s_nsyms) { int k = sym_find(key); key = k >= 0 ? (uint32_t)k : 0xFFFFFFFFu; }
+            for (r = 0; r < nr && rows[r].key != key; r++) { }
+            if (r == nr) { rows[nr].key = key; rows[nr].n = 0; nr++; }
+            rows[r].n += t->site[j].n;
+        }
+        qsort(rows, nr, sizeof *rows, row_cmp);
+        fprintf(stderr, "[PROFILE] thread %d (core %d, %s): %u samples\n", i, t->core,
+                t->core >= 0 && t->core < 3 ? role[t->core] : "?", t->samples);
+        for (j = 0; j < nr && shown < 30; j++) {
+            double pc = 100.0 * rows[j].n / t->samples;
+            if (pc < 0.5) break;
+            if (s_nsyms)
+                fprintf(stderr, "[PROFILE]   %5.1f%%  %s\n", pc,
+                        rows[j].key != 0xFFFFFFFFu ? s_syms[rows[j].key].name : "(outside the program)");
+            else
+                fprintf(stderr, "[PROFILE]   %5.1f%%  0x%08X\n", pc, rows[j].key);
+            shown++;
+        }
+        free(rows);
+    }
+    fflush(stderr);
+}
+
+static void sw_prof_main(void *arg)
+{
+    const char *e = (const char *)arg;
+    double start = 20.0, secs = 10.0;
+    u64 t0, t1, f = armGetSystemTickFreq();
+    uintptr_t base = (uintptr_t)__start__;
+    int i;
+    sscanf(e, "%lf,%lf", &start, &secs);
+    svcSleepThread((s64)(start * 1e9));
+    for (i = 0; i < s_sw_n; i++)
+        s_sw[i].site = calloc(MAX_SITES, sizeof *s_sw[i].site);
+    fprintf(stderr, "[PROFILE] sampling %d threads for %.1f s\n", s_sw_n, secs);
+    t0 = armGetSystemTick();
+    while ((double)(armGetSystemTick() - t0) / (double)f < secs) {
+        for (i = 0; i < s_sw_n; i++) {
+            SwProfThread *t = &s_sw[i];
+            ThreadContext ctx;
+            if (!t->site) continue;
+            if (R_FAILED(svcSetThreadActivity(t->h, ThreadActivity_Paused))) { t->lost++; continue; }
+            if (R_SUCCEEDED(svcGetThreadContext3(&ctx, t->h))) {
+                svcSetThreadActivity(t->h, ThreadActivity_Runnable);
+                t->samples++;
+                sw_record(t, (uint32_t)(ctx.pc.x - base));
+            } else {
+                svcSetThreadActivity(t->h, ThreadActivity_Runnable);
+                t->lost++;
+            }
+        }
+        svcSleepThread(1000000);
+    }
+    t1 = armGetSystemTick();
+    sw_report((double)(t1 - t0) / (double)f);
+}
+
+void xbox_profile_start_from_env(void)
+{
+    static char spec[64];
+    static Thread th;
+    const char *e = getenv("XBOX_PROFILE");
+    if (!e || !e[0]) return;
+    snprintf(spec, sizeof spec, "%s", e);
+    /* above every game thread, on the core the game leaves free */
+    if (R_SUCCEEDED(threadCreate(&th, sw_prof_main, spec, NULL, 0x10000, 0x2A, 2)))
+        threadStart(&th);
+}
+
+#else /* !_WIN32 && !__SWITCH__ */
 
 /* The sampler suspends threads and reads their contexts through the Win32
  * debugging API; there is no equivalent here, so XBOX_PROFILE is ignored. */
@@ -328,4 +541,4 @@ void xbox_profile_note_stall(long long qpc_start, long long qpc_end)
 { (void)qpc_start; (void)qpc_end; }
 void xbox_profile_start_from_env(void) { }
 
-#endif /* _WIN32 */
+#endif /* _WIN32 / __SWITCH__ */
