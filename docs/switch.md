@@ -54,6 +54,16 @@ Start it this way, not from the album: from the album, homebrew gets a small par
 the game needs the Xbox's whole 64 MB plus the GPU's memory and its own textures. Started from the album, it says
 so and stops.
 
+### A home-menu icon (optional)
+
+`build_switch_nsp.bat "C:\path\to\prod.keys" "C:\path\to\cover.png"` (or `./build_switch_nsp.sh` elsewhere)
+makes `dist/switch/SSX Tricky.nsp`: an icon for the home menu that starts `sdmc:/switch/opentricky/SSX Tricky.nro`
+as a full application, so no holding **R**. The picture is yours to choose (a square one fills the icon), and
+`prod.keys` is your console's own key file, dumped with Lockpick_RCM. Install the .nsp with your installer (DBI,
+Tinfoil, ...); like any unsigned .nsp it needs custom firmware with signature patches. It is made with your
+console's keys, so keep it to yourself. Its loader is nx-hbloader (`port/switch/forwarder/`, ISC licence), set
+to start the game and close when the game returns; the home-menu entry keeps working when you rebuild the .nro.
+
 ## Files on the SD card
 
 All in `sdmc:/switch/opentricky/`:

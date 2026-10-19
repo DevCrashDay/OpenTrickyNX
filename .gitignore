@@ -69,3 +69,8 @@ Thumbs.db
 # never a private key in git
 *.pem
 *.key
+
+# Switch keys and installable packages: made with your own console keys
+*.keys
+*.nsp
+*.nca
