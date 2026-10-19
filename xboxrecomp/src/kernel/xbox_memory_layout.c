@@ -1110,7 +1110,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
     {
         void *block = NULL;
 #if defined(__SWITCH__)
-        if (posix_memalign(&block, 0x1000, XBOX_COMPACT_HOST_SIZE) != 0) block = NULL;
+        if (!(block = xbox_aligned_alloc(0x1000, XBOX_COMPACT_HOST_SIZE))) block = NULL;
         if (block) memset(block, 0, XBOX_COMPACT_HOST_SIZE);
 #else
         block = VirtualAlloc(NULL, XBOX_COMPACT_HOST_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);

@@ -18,6 +18,31 @@
 
 #include "xbox_winnt.h"
 
+#include <stdlib.h>
+#if defined(__SWITCH__)
+#include <malloc.h>
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Aligned memory, freed with free(): newlib on the Switch has memalign but
+ * not posix_memalign. */
+static inline void *xbox_aligned_alloc(size_t align, size_t size)
+{
+#if defined(__SWITCH__)
+    return memalign(align, size);
+#else
+    void *p = NULL;
+    return posix_memalign(&p, align, size) == 0 ? p : NULL;
+#endif
+}
+
+#ifdef __cplusplus
+}
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

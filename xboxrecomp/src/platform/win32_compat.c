@@ -1432,7 +1432,7 @@ LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD pro
         return NULL;
     }
     size = (size + 0xFFF) & ~(SIZE_T)0xFFF;
-    if (posix_memalign(&p, 0x1000, size) != 0) p = NULL;
+    if (!(p = xbox_aligned_alloc(0x1000, size))) p = NULL;
     if (!p) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
     memset(p, 0, size);
     if ((protect & 0xFF) != PAGE_READWRITE && (protect & 0xFF) != 0)
@@ -1540,7 +1540,7 @@ void *_aligned_malloc(SIZE_T size, SIZE_T alignment)
     SIZE_T a = sizeof(void *);
     while (a < alignment) a <<= 1;
     void *p = NULL;
-    if (posix_memalign(&p, a, size ? size : 1) != 0) return NULL;
+    if (!(p = xbox_aligned_alloc(a, size ? size : 1))) return NULL;
     return p;
 }
 

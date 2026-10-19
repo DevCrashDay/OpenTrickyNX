@@ -450,9 +450,25 @@ bool nv2a_hook_handle_vram(uintptr_t fault_addr, uint32_t fault_xbox_va)
     return false;
 }
 
-#else /* !_WIN32 -- SIGSEGV-based MMIO trapping deferred to main.c port */
+#else /* !_WIN32: only the DAC page is trapped, through host_fault */
 
-bool nv2a_dac_trap_install(uint8_t *mem_base) { (void)mem_base; return false; }
+#include "platform/host_fault.h"
+#include "kernel/xbox_compact_layout.h"
+
+/* The PRMDIO page as on Windows (see above); host_fault decodes the access. */
+bool nv2a_dac_trap_install(uint8_t *mem_base)
+{
+    const uint32_t va = NV2A_MMIO_BASE + NV2A_PRMDIO_OFFSET;
+    (void)mem_base; /* placed through xbox_host_ptr */
+    if (!host_trap_register(xbox_host_ptr(va), va, 0x1000, nv2a_dac_mmio_access)) {
+        fprintf(stderr, "  [DAC] could not trap the palette page -- gamma ramp ignored\n");
+        fflush(stderr);
+        return false;
+    }
+    fprintf(stderr, "  [DAC] palette registers trapped at Xbox VA 0x%08X (4 KB)\n", va);
+    fflush(stderr);
+    return true;
+}
 bool nv2a_dac_handle_mmio(PCONTEXT ctx, uint32_t fault_xbox_va, int is_write)
 { (void)ctx; (void)fault_xbox_va; (void)is_write; return false; }
 
