@@ -38,11 +38,17 @@ if(NINTENDO_SWITCH)
         add_compile_definitions(XBOX_GUEST_REGS=1)
         add_compile_options("$<$<COMPILE_LANGUAGE:C>:-include${XBOXRECOMP_DIR}/src/kernel/xbox_guest_regs.h>")
     endif()
-    # Null-pointer accesses absorbed by guest page 0 rather than a page of
-    # their own, for a cheaper check on every guest memory access
-    # (port/src/recomp/recomp_types.h, XBOX_NULL_IN_PAGE0).
-    option(OT_FAST_MEMCHECK "One compare per guest memory access" ON)
+    # Guest stack accesses skip the address check (the stack is always guest
+    # RAM; port/src/recomp/recomp_types.h, XBOX_STACK_UNCHECKED).
+    option(OT_FAST_MEMCHECK "No address check on guest stack accesses" ON)
     if(OT_FAST_MEMCHECK)
+        add_compile_definitions(XBOX_STACK_UNCHECKED=1)
+    endif()
+    # Null-pointer accesses absorbed by guest page 0 rather than a page of
+    # their own: one compare less per access, but a sky effect flashes white
+    # (XBOX_NULL_IN_PAGE0). Off; only to measure.
+    option(OT_NULL_IN_PAGE0 "Null-pointer accesses land on guest page 0" OFF)
+    if(OT_NULL_IN_PAGE0)
         add_compile_definitions(XBOX_NULL_IN_PAGE0=1)
     endif()
 endif()

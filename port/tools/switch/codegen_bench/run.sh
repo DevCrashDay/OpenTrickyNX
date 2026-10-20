@@ -41,7 +41,7 @@ cp pass/recomp_bench.c gen.c
 # ── compile it both ways ───────────────────────────────────────────────────
 # Include paths and the register-mode flags, for a tree at $1.
 inc()  { echo "-I$1/port/src/posix/compat -I$1/port/src -I$1/port/src/recomp -I$1/xboxrecomp/include -I$1/xboxrecomp/src"; }
-regs() { echo "-DXBOX_GUEST_REGS=1 -DXBOX_NULL_IN_PAGE0=1 -include $1/xboxrecomp/src/kernel/xbox_guest_regs.h"; }
+regs() { echo "-DXBOX_GUEST_REGS=1 -DXBOX_STACK_UNCHECKED=1 -include $1/xboxrecomp/src/kernel/xbox_guest_regs.h"; }
 WARN="-Wno-int-conversion -Wno-incompatible-pointer-types"
 if command -v docker >/dev/null && docker image inspect devkitpro/devkita64 >/dev/null 2>&1; then
     CC=/opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc

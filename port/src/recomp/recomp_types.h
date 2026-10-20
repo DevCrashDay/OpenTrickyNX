@@ -616,16 +616,21 @@ static inline uint32_t xbox_recomp_fold(uint32_t va) {
 #ifndef XBOX_NULL_IN_PAGE0
 #define XBOX_NULL_IN_PAGE0 0
 #endif
+#ifndef XBOX_STACK_UNCHECKED
+#define XBOX_STACK_UNCHECKED XBOX_NULL_IN_PAGE0
+#endif
 #if FORK_FAST_RESOLVE
 static uint32_t xbox_resolve_uncached_alias_slow(uint32_t va) __attribute__((noinline, unused));
 static inline __attribute__((always_inline)) uint32_t xbox_resolve_uncached_alias(uint32_t va) {
 #if XBOX_NULL_IN_PAGE0
-    /* Null-pointer accesses land on guest page 0 itself, which nothing else
-     * uses, instead of the XBOX_NULL_PAGE_VA page below: the same absorbing
-     * page as far as the title can tell (and the one the host side's
-     * BRIDGE_MEM32 already used), for one compare against an immediate
+    /* Null-pointer accesses land on guest page 0 itself instead of the
+     * XBOX_NULL_PAGE_VA page below, for one compare against an immediate
      * instead of a subtract, a compare and a 32-bit constant on every access.
-     * XBOX_PROTECT_LOWPAGE=1 makes them fault, as that option intends. */
+     * Not the same page as far as the title can tell: page 0 also takes the
+     * fs: accesses of threads without a TIB and the host's own null
+     * accesses, and on the Switch a sky effect then flashed white when a new
+     * part of a course came in. Off by default (XBOX_STACK_UNCHECKED keeps
+     * the stack's own fast path). */
     if (__builtin_expect(va < XBOX_IDENTITY_LIMIT, 1))
         return va;
 #else
@@ -871,10 +876,11 @@ extern __thread uint64_t g_mm[8];
 
 /*
  * Accesses at esp (port/tools/fork/fix_stack_access.py, PUSH32/POP32): the
- * stack is always guest RAM, so with XBOX_NULL_IN_PAGE0 they skip the address
- * check. Otherwise they are the checked forms above.
+ * stack is always guest RAM, where the address check returns the address
+ * unchanged, so with XBOX_STACK_UNCHECKED they skip it. Otherwise they are
+ * the checked forms above.
  */
-#if XBOX_NULL_IN_PAGE0
+#if XBOX_STACK_UNCHECKED
 #define XBOX_STK_PTR(addr) ((uintptr_t)(uint32_t)(addr) + g_xbox_mem_offset)
 #else
 #define XBOX_STK_PTR(addr) XBOX_PTR(addr)

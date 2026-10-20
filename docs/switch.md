@@ -144,8 +144,10 @@ Two build options make the translated game faster on the Switch; both are on by 
 
 - `OT_GUEST_REGS`: the game's x86 registers live in the Switch CPU's own registers instead of memory, and the
   rest of its per-thread CPU state (the x87 float stack and the like) sits behind a register too.
-- `OT_FAST_MEMCHECK`: every game memory access is checked with a single compare. Null
-  pointers then land on game address 0 instead of a page of their own, which the game cannot tell apart.
+- `OT_FAST_MEMCHECK`: the game's stack accesses skip the address check (the stack is always in game memory).
+
+`OT_NULL_IN_PAGE0` (off) saves one more instruction on every other memory access by letting null pointers land
+on game address 0 instead of a page of their own; the game can tell, and a sky effect flashes white with it.
 
 To build without one, for instance to see whether it is behind a problem, set `SWITCH_OPTS` before building:
 
