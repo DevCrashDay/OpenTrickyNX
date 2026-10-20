@@ -16,9 +16,14 @@ No retail bytes are reproduced here beyond a few header values.
 
 ## The course archive
 
-`data/models/<course>.big` is an EA `C0FB` archive: a big-endian header (`C0 FB`, header size `u16`, entry
-count `u16`), then per entry a 3-byte offset, a 3-byte size and a NUL-terminated name. Each member is
-compressed with EA RefPack (`10 FB`, then the 3-byte unpacked size). **file**
+`data/models/<course>.big` is an EA `C0FB` archive: a big-endian header (`C0 FB`, then a `u16` holding the
+header's length less 4, then the member count as a `u16`), then per member a 3-byte offset, a 3-byte size and a
+NUL-terminated name. Members start on 0x80-byte boundaries and the file ends on the last one, unpadded. Each
+member is compressed with EA RefPack (`10 FB`, then the 3-byte unpacked size). **file**
+
+`tools/xbox_course/course_big.py` unpacks and repacks these archives. Writing back what it reads gives the
+retail archive byte for byte (Garibaldi, Pipe Dream, the trick course), and every member it recompresses
+unpacks to the same bytes (`tools/xbox_course/test_course_big.py`).
 
 Garibaldi holds 13 members:
 
@@ -66,6 +71,45 @@ it uses are what name the sections below. **loader**
 | 0x44 | 0x94 | hash data, as on PS2 (not yet confirmed) | variable | count 0, 34,732 bytes |
 | 0x48 | 0x98 | unknown | 12 | 4098 |
 | | 0x9C | unused on Garibaldi | | 0 |
+
+### Records shared with the PS2
+
+Read against SSX-Library's `PBDHandler.cs`, these records have the PS2 size and the PS2 field order, with
+plausible values everywhere on Garibaldi (indices in range, unit normals, colours): particle instances
+(112), materials (72: texture id first, flipbook id last), lights (92: type, sprite, colour, direction,
+position, bounding box), splines (40) and spline segments (128). **file**
+
+### Instances (props): 144 bytes, PS2 256
+
+| Offset | Field |
+|---|---|
+| 0x00 | placement matrix, 4 × 4 floats |
+| 0x40 | model id (0–647 on Garibaldi), previous and next instance (−1 = none) |
+| 0x4C | bounding box, low then high |
+| 0x64 | three `u32`, zero on every Garibaldi instance |
+| 0x70 | model id again, as PS2's `ModelID2` |
+| 0x74 | packed ARGB colour (0xFF7F7F7F and similar on 450 instances), else 0 or −1 |
+| 0x78 | 1 on every instance |
+| 0x7C, 0x80 | indices or −1 (43 and 29 distinct values) |
+| 0x84 | float, 1.0 or 0 on most, varied on the rest |
+| 0x88, 0x8C | zero on every instance |
+
+The PS2 instance carries a second 4 × 4 matrix of light directions and four light colours after the placement
+matrix (128 bytes); the Xbox has neither, and adds the 16 bytes from 0x80. A PS2 instance converts by dropping
+those 128 bytes and appending four words; what the Xbox should put at 0x74 and 0x7C–0x84 is still open.
+
+### Models: header and object table as on PS2, meshes not
+
+Each model starts with the PS2's 15-word header (total length, object count, object offset = 0x3C, material
+block, …): on all 648 Garibaldi models the total length equals the distance to the next model, and the material
+block is in range. The object table at 0x3C has the PS2 layout too (parent, high, medium and low detail offsets,
+animation, matrix). **file**
+
+The mesh data differs. Where the PS2 stores VIF packets with their own vertices, the Xbox stores `u16` triangle
+strips (with the usual repeated indices between strips), and header word 0x34 is the total number of strip
+indices (model 0: 247 + 22 = 269). The indices of one model carry on from the previous model's (model 0 uses
+0–161, model 1 starts at 162), so they index the shared vertex pool at offset 0x58. That is inferred from the
+numbering; the few words in front of each strip are not decoded yet.
 
 Record sizes come from each section's length divided by its count, which comes out exact (splines leave 4 bytes
 of alignment padding). **file** The record sizes for instances (144), particle instances (112), materials (72),
@@ -143,16 +187,25 @@ The PS2 bank uses 8-bit indexed pages (type 2) instead. OpenTricky reads lightma
 
 ## The other members
 
-- `.ltg`: same header layout as SSX-Library's `LTGHandler.cs`; the world-grid cell size at 0x28 reads 10,000 as
-  it does there. Only the tool revision byte differs (Xbox `0x1E`, PS2 `0x1B`). **file**
+- `.xsf` (collision): its header is the PS2 `.ssf` header word for word (`SSFHandler.cs`): effect slots,
+  physics, collision models, effects, functions, object properties, instances and splines, each a count and an
+  offset. On Garibaldi the instance and spline counts (3393, 169) equal the `.xbd`'s, and the 78 effect slots
+  of 28 bytes end exactly where the physics section starts. The records themselves are not compared yet. **file**
+- `.aip`, `.sop` (AI and race paths): SSX-Library's shared `AIPSOPHandler.cs` walks all 90 and 32 paths and
+  stops exactly at the race-line offset plus the 16 bytes it skips, as on PS2. **file**
+- `.adl` (sounds): `ADLHandler.cs`'s layout holds: 3085 entries, every sound offset inside the file. **file**
+- `.ltg`: same header layout as `LTGHandler.cs`; the world-grid cell size at 0x28 reads 10,000 as it does there.
+  Only the tool revision byte differs (Xbox `0x1E`, PS2 `0x1B`). **file**
 - `.map`: plain text, and its header itself says "PS2 Version", tool revision 30. **file**
-- `.aip`, `.sop`, `.adl`: SSX-Library's handlers for these sit outside its `PS2/` and `Xbox/` folders. Not yet
-  checked against the Xbox files.
-- `.xsf`: begins `00 02 1E 00 00 18 1E 00`, then a table of `u32` counts and offsets. Not decoded yet.
+
+So the paths, sounds, grid and map should carry over from a PS2 build as they are, and collision probably does.
+What needs real conversion is the `.xbd` (terrain tail fields, instances, model meshes into the vertex pool) and
+the texture banks, plus a `_B.xsh` of normal maps.
 
 ## Next
 
-1. Decode the instance, material, model and particle model records against the PS2 ones.
-2. Trace the 0x48/0x98 section and the unknown patch fields in the loader.
-3. Decode `.xsf` collision.
-4. Round trip: unpack, repack unchanged, and confirm OpenTricky still loads the course.
+1. Decode the words in front of each model's strips, and the vertex pool's link to them.
+2. Trace the instance words at 0x74 and 0x7C–0x84, the 0x48/0x98 section, and the unknown patch fields.
+3. Compare the `.xsf` collision records with the PS2 ones.
+4. A Garibaldi repacked with `course_big.py` (every member recompressed) is waiting to be tried in the game:
+   if it plays, the archive and compression side of a writer is settled.
