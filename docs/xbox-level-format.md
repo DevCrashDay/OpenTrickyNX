@@ -207,5 +207,5 @@ the texture banks, plus a `_B.xsh` of normal maps.
 1. Decode the words in front of each model's strips, and the vertex pool's link to them.
 2. Trace the instance words at 0x74 and 0x7C–0x84, the 0x48/0x98 section, and the unknown patch fields.
 3. Compare the `.xsf` collision records with the PS2 ones.
-4. A Garibaldi repacked with `course_big.py` (every member recompressed) is waiting to be tried in the game:
-   if it plays, the archive and compression side of a writer is settled.
+4. Done: a Garibaldi repacked with `course_big.py` (every member recompressed by it) loads and races normally in
+   the Switch build (2026-10-20). The archive and compression side of a writer is settled.
