@@ -84,32 +84,72 @@ position, bounding box), splines (40) and spline segments (128). **file**
 | Offset | Field |
 |---|---|
 | 0x00 | placement matrix, 4 × 4 floats |
-| 0x40 | model id (0–647 on Garibaldi), previous and next instance (−1 = none) |
+| 0x40 | model id (0–647 on Garibaldi), previous and next instance (−1 = none); the loader turns all three into pointers (`sub_0013B320`) |
 | 0x4C | bounding box, low then high |
 | 0x64 | three `u32`, zero on every Garibaldi instance |
-| 0x70 | model id again, as PS2's `ModelID2` |
+| 0x70 | material block id, PS2's `ModelID2`: the loader resolves it through the material blocks, and it equals the model's own block on all 3393 |
 | 0x74 | packed ARGB colour (0xFF7F7F7F and similar on 450 instances), else 0 or −1 |
 | 0x78 | 1 on every instance |
 | 0x7C, 0x80 | indices or −1 (43 and 29 distinct values) |
 | 0x84 | float, 1.0 or 0 on most, varied on the rest |
-| 0x88, 0x8C | zero on every instance |
+| 0x88, 0x8C | zero on every instance; the loader clears 0x88 itself |
 
 The PS2 instance carries a second 4 × 4 matrix of light directions and four light colours after the placement
 matrix (128 bytes); the Xbox has neither, and adds the 16 bytes from 0x80. A PS2 instance converts by dropping
-those 128 bytes and appending four words; what the Xbox should put at 0x74 and 0x7C–0x84 is still open.
+those 128 bytes and appending four words. The loader leaves 0x74–0x84 alone, so they are read later, while the
+course runs; what a converter should write there is still open (copying the most common values, 0, −1, −1, 1.0, is
+the safe guess).
 
-### Models: header and object table as on PS2, meshes not
+### Models
 
-Each model starts with the PS2's 15-word header (total length, object count, object offset = 0x3C, material
-block, …): on all 648 Garibaldi models the total length equals the distance to the next model, and the material
-block is in range. The object table at 0x3C has the PS2 layout too (parent, high, medium and low detail offsets,
-animation, matrix). **file**
+The game walks models in a base class whose methods fix offsets into pointers and hand each part to the next
+method (vtable at 0x1A7AE8, models from slot 0x34, `sub_0013AA20`, then `sub_0013AA50`, `sub_0013AA80`,
+`sub_0013AB20`; the level loaders at 0x19AAC0 and 0x1A7C68 override only the dispatcher and the mesh leaf,
+`sub_001437F0`). Every layout below is what those methods read, and it parses all 648 Garibaldi models with
+nothing left over. **loader**, **file**
 
-The mesh data differs. Where the PS2 stores VIF packets with their own vertices, the Xbox stores `u16` triangle
-strips (with the usual repeated indices between strips), and header word 0x34 is the total number of strip
-indices (model 0: 247 + 22 = 269). The indices of one model carry on from the previous model's (model 0 uses
-0–161, model 1 starts at 162), so they index the shared vertex pool at offset 0x58. That is inferred from the
-numbering; the few words in front of each strip are not decoded yet.
+**Model header**, 15 `u32`, the PS2 header:
+
+| Offset | Field |
+|---|---|
+| 0x00 | total length; the next model starts here (true for all 648) |
+| 0x04 | object count |
+| 0x08 | offset of the object table, from the model (always 0x3C) |
+| 0x0C | material block id; the loader swaps it for a pointer into the material blocks |
+| 0x10, 0x14 | unknown, animation time (as PS2) |
+| 0x18 | three floats, PS2's "scale" |
+| 0x24 | mesh count of the high-detail meshes |
+| 0x28 | PS2's vertex count; not the number of vertices the strips use (model 0: 68 for 162) |
+| 0x2C | strip count of the high-detail meshes |
+| 0x30 | total strip indices of the high-detail meshes (model 0: 247 + 22 = 269) |
+| 0x34 | PS2's "non-tri" count |
+
+Mesh count, strip count and index total agree with the meshes on all 648 models.
+
+**Object**, 0x18 bytes, the PS2 layout: parent (−1 = none), offsets of the high, medium and low detail mesh
+headers (from the object; equal offsets share one header), offset of the animation (0 = none), offset of the
+matrix (−1 = identity).
+
+**Mesh header**: length, bounding box (low, high), flags, mesh count (0x20), a count at 0x24 that is not the
+triangle count, then at 0x28 the offset (from the mesh header, always 0x2C) of a table of `mesh count` words,
+each the offset of one mesh from that word itself. The PS2 header has the same fields up to 0x28.
+
+**Mesh**, where the PS2 keeps VIF packets with their own vertices:
+
+| Offset | Field |
+|---|---|
+| 0x00 | length; the next mesh starts here |
+| 0x04 | material: index into the model's material block, whose entry is a material index (valid on all 824 meshes) |
+| 0x08 | offset of the strip data, from the mesh (always 0xC) |
+| 0x0C | `u16` strip count (1 on every Garibaldi mesh), then per strip a `u16` length and that many `u16` indices |
+
+The strips are triangle strips joined by repeated indices. Their indices point into the course's **vertex pool**
+(offset 0x58): one model's indices carry on where the previous model's stopped (0–161, 162–213, 214–357, …), and
+together they cover the pool exactly (0–29,505 of 29,506). So each model's vertices are a contiguous run of the
+pool, in model order, with position, normal and UV per vertex.
+
+For a converter this means: append each model's vertices to one pool, write its strips with indices offset by
+the pool's length so far, and give each mesh its material slot. Nothing in the mesh carries lighting.
 
 Record sizes come from each section's length divided by its count, which comes out exact (splines leave 4 bytes
 of alignment padding). **file** The record sizes for instances (144), particle instances (112), materials (72),
@@ -204,8 +244,10 @@ the texture banks, plus a `_B.xsh` of normal maps.
 
 ## Next
 
-1. Decode the words in front of each model's strips, and the vertex pool's link to them.
-2. Trace the instance words at 0x74 and 0x7C–0x84, the 0x48/0x98 section, and the unknown patch fields.
+1. Trace where the running game reads the instance words at 0x74–0x84, and the patch fields at 0x168 and 0x1C6–0x2CF.
+2. The 0x48/0x98 section (4098 records of 12 bytes).
 3. Compare the `.xsf` collision records with the PS2 ones.
-4. Done: a Garibaldi repacked with `course_big.py` (every member recompressed by it) loads and races normally in
-   the Switch build (2026-10-20). The archive and compression side of a writer is settled.
+4. Then write the converter: a PS2 course (or a Slopesmith export) in, an Xbox `.big` out.
+
+Done: a Garibaldi repacked with `course_big.py` (every member recompressed by it) loads and races normally in
+the Switch build (2026-10-20). The archive and compression side of a writer is settled.
