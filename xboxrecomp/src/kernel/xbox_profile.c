@@ -351,6 +351,7 @@ typedef struct {
 } SwProfThread;
 
 extern char __start__[];
+static uintptr_t sw_module_base(void);
 extern int __system_argc;
 extern char **__system_argv;
 
@@ -484,7 +485,7 @@ static void sw_report(double secs)
         qsort(rows, nr, sizeof *rows, row_cmp);
         fprintf(stderr, "[PROFILE] thread %d (core %d, %s): %u samples (%u empty, %u refused), program at 0x%lx, first pc 0x%lx 0x%lx 0x%lx\n",
                 i, t->core, t->core >= 0 && t->core < 3 ? role[t->core] : "?", t->samples, t->zero, t->lost,
-                (unsigned long)(uintptr_t)__start__, (unsigned long)t->first_pc[0],
+                (unsigned long)sw_module_base(), (unsigned long)t->first_pc[0],
                 (unsigned long)t->first_pc[1], (unsigned long)t->first_pc[2]);
         for (j = 0; j < nr && shown < 30; j++) {
             double pc = 100.0 * rows[j].n / t->samples;
@@ -501,12 +502,24 @@ static void sw_report(double secs)
     fflush(stderr);
 }
 
+/* Where the program's code starts: the start of the memory block that holds
+ * this function (the .nro's code segment begins at the module's base).
+ * __start__ reads back as 0 in the .nro. */
+static uintptr_t sw_module_base(void)
+{
+    MemoryInfo mi;
+    u32 pi;
+    if (R_SUCCEEDED(svcQueryMemory(&mi, &pi, (u64)(uintptr_t)&sw_module_base)))
+        return (uintptr_t)mi.addr;
+    return (uintptr_t)__start__;
+}
+
 static void sw_prof_main(void *arg)
 {
     const char *e = (const char *)arg;
     double start = 20.0, secs = 10.0;
     u64 t0, t1, f = armGetSystemTickFreq();
-    uintptr_t base = (uintptr_t)__start__;
+    uintptr_t base = sw_module_base();
     int i;
     sscanf(e, "%lf,%lf", &start, &secs);
     svcSleepThread((s64)(start * 1e9));
