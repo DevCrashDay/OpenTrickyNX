@@ -870,6 +870,26 @@ extern __thread uint64_t g_mm[8];
 #define MEM64(addr)  (*(volatile uint64_t *)XBOX_PTR(addr))
 
 /*
+ * Accesses at esp (port/tools/fork/fix_stack_access.py, PUSH32/POP32): the
+ * stack is always guest RAM, so with XBOX_NULL_IN_PAGE0 they skip the address
+ * check. Otherwise they are the checked forms above.
+ */
+#if XBOX_NULL_IN_PAGE0
+#define XBOX_STK_PTR(addr) ((uintptr_t)(uint32_t)(addr) + g_xbox_mem_offset)
+#else
+#define XBOX_STK_PTR(addr) XBOX_PTR(addr)
+#endif
+#define MEM8_STK(addr)   (*(volatile uint8_t  *)XBOX_STK_PTR(addr))
+#define MEM16_STK(addr)  (*(volatile uint16_t *)XBOX_STK_PTR(addr))
+#define MEM32_STK(addr)  (*(volatile uint32_t *)XBOX_STK_PTR(addr))
+#define MEM64_STK(addr)  (*(volatile uint64_t *)XBOX_STK_PTR(addr))
+#define SMEM8_STK(addr)  (*(volatile int8_t   *)XBOX_STK_PTR(addr))
+#define SMEM16_STK(addr) (*(volatile int16_t  *)XBOX_STK_PTR(addr))
+#define SMEM32_STK(addr) (*(volatile int32_t  *)XBOX_STK_PTR(addr))
+#define MEMF_STK(addr)   (*(volatile float    *)XBOX_STK_PTR(addr))
+#define MEMD_STK(addr)   (*(volatile double   *)XBOX_STK_PTR(addr))
+
+/*
  * MMX.
  *
  * The generated code already declares mm0-mm7 as plain `uint64_t`, so the
@@ -1110,12 +1130,12 @@ static inline uint32_t ROR32(uint32_t val, int n) {
 #define PUSH32(sp, val) do { \
     uint32_t _pv = (uint32_t)(val); \
     (sp) -= 4; \
-    MEM32(sp) = _pv; \
+    MEM32_STK(sp) = _pv; \
 } while(0)
 
 /** Pop a 32-bit value from the simulated stack. */
 #define POP32(sp, dst) do { \
-    (dst) = MEM32(sp); \
+    (dst) = MEM32_STK(sp); \
     (sp) += 4; \
 } while(0)
 

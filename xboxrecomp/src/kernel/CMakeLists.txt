@@ -21,6 +21,7 @@ set(KERNEL_SOURCES
     kernel_thunks.c
     kernel_bridge.c
     xbox_memory_layout.c
+    xbox_guest_regs.c
     xbox_diag.c
     xbox_profile.c
     xbox_perf.c

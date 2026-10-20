@@ -155,6 +155,9 @@ SWITCH_OPTS="-DOT_GUEST_REGS=OFF -DOT_FAST_MEMCHECK=OFF" ./build_switch.sh "path
 On Windows, `set SWITCH_OPTS=-DOT_GUEST_REGS=OFF` in the same window before `build_switch.bat`. The build
 folder keeps the setting: build again with `=ON` to go back.
 
+`port/tools/switch/codegen_bench/run.sh` (Linux, with qemu) puts a small x86 program through the translator and
+checks that both builds of it print what the x86 program prints.
+
 ## Troubleshooting
 
 - **A message says the disc image is missing**: check that `game/default.xbe` is there, or put the `.iso` in `sdmc:/switch/opentricky/`, or give its full
