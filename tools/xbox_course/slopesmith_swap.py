@@ -21,6 +21,7 @@ sys.path.insert(0, HERE)
 import aipsop  # noqa: E402
 import dxt  # noqa: E402
 import ltg  # noqa: E402
+import models as MD  # noqa: E402
 import patches as P  # noqa: E402
 
 START_HASH, FINISH_HASH = 0x0091F640, 0x0FC656E0
@@ -67,6 +68,74 @@ def move_start(x, race):
     struct.pack_into("<16f", x, b, *new.reshape(16))
     struct.pack_into("<6f", x, b + 0x4C, *moved[:, :3].min(0), *moved[:, :3].max(0))
     return i, new[3, :3], math.degrees(yaw)
+
+
+def move_to(x, i, loc):
+    """Translate an instance, keeping its turn; its box moves with it."""
+    b = u32(x, 0x5C) + 144 * i
+    old = np.array(struct.unpack_from("<3f", x, b + 0x30))
+    d = np.array(loc) - old
+    struct.pack_into("<3f", x, b + 0x30, *loc)
+    lo, hi = instance_box(x, i)
+    struct.pack_into("<6f", x, b + 0x4C, *(lo + d), *(hi + d))
+
+
+def placement(loc, q, scale):
+    """Row-vector matrix (System.Numerics: scale, then quaternion, then translation)."""
+    qx, qy, qz, qw = q
+    r = np.array([[1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy + qw * qz), 2 * (qx * qz - qw * qy)],
+                  [2 * (qx * qy - qw * qz), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz + qw * qx)],
+                  [2 * (qx * qz + qw * qy), 2 * (qy * qz - qw * qx), 1 - 2 * (qx * qx + qy * qy)]])
+    m = np.eye(4)
+    m[:3, :3] = np.diag(scale) @ r
+    m[3, :3] = loc
+    return m
+
+
+def place_props(x, out, name, export, exp_inst, markers):
+    """The export's props, written into hidden props of the slot: each distinct mesh into a slot model with
+    room for it, each placement into a slot instance. Nothing grows, so no offset moves. They draw but do not
+    collide (Slopesmith's default for a placed prop); their material is the slot model's own."""
+    mods = json.load(open(os.path.join(export, "Models.json")))["Models"]
+    props = [e for e in exp_inst if not e["InstanceName"].startswith("Mdl_StageArea_")]
+    if not props:
+        return {}
+    xsf_path = os.path.join(out, name + ".xsf")
+    xsf = bytearray(open(xsf_path, "rb").read())
+    op_off, op_n, st_off = u32(xsf, 0x38), u32(xsf, 0x34), u32(xsf, 0x40)
+    ops = [struct.unpack_from("<2f2HI4h", xsf, op_off + 24 * i) for i in range(op_n)]
+    plain = next(i for i, o in enumerate(ops) if o[3] == 1 and o[5] == 0 and o[7] == -1)   # visible, no contact
+    state = lambda i: u32(xsf, st_off + 4 * i)
+    ib = u32(x, 0x5C)
+    marker_models = {u32(x, ib + 144 * i + 0x40) for i in markers}
+    M = MD.read_models(x)
+    free_models = [i for i in range(len(M)) if i not in marker_models]
+    free_inst = [i for i in range(u32(x, 0x14)) if i not in markers and ops[state(i)][7] == -1]
+    done, placed = {}, {}
+    for e in props:
+        path = os.path.join(export, "Meshes", mods[e["ModelID"]]["ModelObjects"][0]["MeshData"][0]["MeshPath"])
+        key = open(path, "rb").read()
+        if key not in done:
+            verts, tris = MD.flat_mesh(*MD.load_obj(path))
+            mi = next((m for m in free_models if MD.put_mesh(x, M[m], verts, tris)), None)
+            if mi is None:
+                print(f"no slot model has room for {os.path.basename(path)}; skipped")
+                continue
+            free_models.remove(mi)
+            done[key] = (mi, verts)
+        mi, verts = done[key]
+        i = free_inst.pop(0)
+        m = placement(e["Location"], e["Rotation"], e["Scale"])
+        b = ib + 144 * i
+        struct.pack_into("<16f", x, b, *m.reshape(16))
+        world = np.c_[verts[:, :3], np.ones(len(verts))] @ m
+        struct.pack_into("<i2i6f", x, b + 0x40, mi, -1, -1, *world[:, :3].min(0), *world[:, :3].max(0))
+        struct.pack_into("<I", x, b + 0x70, u32(x, M[mi]["off"] + 0x0C))
+        struct.pack_into("<I", xsf, st_off + 4 * i, plain)
+        placed[i] = (world[:, :3].min(0), world[:, :3].max(0))
+    open(xsf_path, "wb").write(xsf)
+    print(f"{len(placed)} props placed using {len(done)} model(s)")
+    return placed
 
 
 def lights(x):
@@ -165,7 +234,13 @@ def main(src, export, out):
     sop = json.load(open(os.path.join(export, "SOP.json")))
     si, pos, yaw = move_start(x, sop["RaceLines"][0])
     print(f"start marker {si} -> ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}), yaw {yaw:.1f}")
-    keep = {i: instance_box(x, i) for i in (si, hash_index(x, FINISH_HASH))}
+    fi = hash_index(x, FINISH_HASH)
+    exp_inst = json.load(open(os.path.join(export, "Instances.json")))["Instances"]
+    for e in exp_inst:
+        if e["InstanceName"].startswith("Mdl_StageArea_Finish"):
+            move_to(x, fi, e["Location"])
+    keep = {i: instance_box(x, i) for i in (si, fi)}
+    keep.update(place_props(x, out, name, export, exp_inst, (si, fi)))
 
     tmpl = ltg.read_ltg(open(os.path.join(out, name + ".ltg"), "rb").read())
     g, cell_of = regenerate(tmpl, boxes, keep, lights(x))

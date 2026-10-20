@@ -276,6 +276,9 @@ Snowknife's `--bare-slot` repack does on the PS2:
 - a new `.ltg` lists only the new patches and the two StageArea markers, so the slot's props, splines and
   particles stay in the file but neither draw nor collide;
 - the start marker is turned and moved onto the export's race line; `.aip`/`.sop` are written from its JSON;
+- the export's props go into hidden props of the slot (`models.py`): each distinct mesh into a slot model with
+  room for its vertices and strip, each placement into a slot instance whose `.xsf` object-properties index
+  (one `u32` per instance) is set to a visible, no-contact entry. The finish marker moves to the export's;
 - the export's lightmap pages replace the slot's first pages, decoded from the PS2 blend form (light =
   (0.5 − rgb)·alpha/128) into the plain light colour the Xbox page holds.
 
@@ -286,12 +289,12 @@ python3 tools/xbox_course/course_big.py pack gari-new gari.big
 ```
 
 The export's textures are DXT1-encoded (`dxt.py`) over the slot textures they replace, at the same size
-and mip count, so the bank's offsets stay put. It needs numpy and Pillow. Props are not carried over yet.
+and mip count, so the bank's offsets stay put. It needs numpy and Pillow. `slopesmith_props_test.ts` (run from Slopesmith's `scripts/`) makes a test export with five crates.
 
 ## Next
 
 1. Test the Slopesmith terrain swap on the Switch.
-2. Carry the export's props over (models into the vertex pool, `.xsf` records).
+2. Prop collision (`.xsf` collision models) and prop materials; props now wear the slot model's material.
 3. Trace where the running game reads the instance words at 0x74–0x84.
 
 Done: a Garibaldi repacked with `course_big.py` (every member recompressed by it) loads and races normally in
