@@ -54,6 +54,8 @@ register int g_fp_top __asm__("w27");                    /* the x87 stack top */
  * and the caller's x19-x27 back afterwards (xbox_memory_layout.c). */
 void *xbox_guest_regs_call(void *(*fn)(void *), void *arg);
 
+#define XBOX_GTLS_ICALL_N 2048u
+
 /* What were separate __thread variables (recomp_types.h describes each). */
 struct xbox_gtls {
     double fp_stack[8];
@@ -65,6 +67,9 @@ struct xbox_gtls {
     __UINT16_TYPE__ x87_cw;
     __UINT64_TYPE__ mm[8];
     unsigned char xmm[8][16] __attribute__((aligned(16)));  /* recomp_xmm_t */
+    /* recomp_manual.c's indirect-call target cache, reached through x26
+     * (it only runs on guest threads) instead of the thread pointer. */
+    struct { __UINT32_TYPE__ va; void (*fn)(void); } icall[XBOX_GTLS_ICALL_N];
 };
 extern __thread struct xbox_gtls t_xbox_gtls;
 

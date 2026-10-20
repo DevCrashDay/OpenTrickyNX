@@ -348,6 +348,9 @@ typedef struct {
     uint64_t first_pc[3];
     unsigned nsites;
     struct { uint32_t off; unsigned n; } *site;
+    /* (function the pc is in, link register): who called a leaf function */
+    unsigned ncalls;
+    struct { int32_t fn; uint32_t lr; unsigned n; } *call;
 } SwProfThread;
 
 extern char __start__[];
@@ -403,6 +406,22 @@ static void sw_record(SwProfThread *t, uint32_t off)
     }
 }
 
+static void sw_record_call(SwProfThread *t, int fn, uint32_t lr)
+{
+    unsigned i = ((uint32_t)fn * 40503u ^ lr * 2654435761u) & (MAX_SITES - 1), k;
+    for (k = 0; k < MAX_SITES; k++, i = (i + 1) & (MAX_SITES - 1)) {
+        if (t->call[i].n && t->call[i].fn == fn && t->call[i].lr == lr) { t->call[i].n++; return; }
+        if (!t->call[i].n) {
+            if (t->ncalls >= MAX_SITES * 3 / 4) return;
+            t->call[i].fn = fn;
+            t->call[i].lr = lr;
+            t->call[i].n = 1;
+            t->ncalls++;
+            return;
+        }
+    }
+}
+
 typedef struct { uint32_t addr, size; char *name; } SwSym;  /* size 0: unknown */
 static SwSym *s_syms;
 static int s_nsyms;
@@ -421,7 +440,8 @@ static void syms_load(void)
     int cap = 0;
     const char *nro = __system_argc > 0 ? __system_argv[0] : NULL;
     const char *slash = nro ? strrchr(nro, '/') : NULL;
-    if (!slash) return;
+    static int loaded;
+    if (loaded++ || !slash) return;
     snprintf(path, sizeof path, "%.*s/SSX Tricky.sym", (int)(slash - nro), nro);
     f = fopen(path, "r");
     if (!f) { fprintf(stderr, "[PROFILE] no %s: offsets only (addr2line -f -e ssx_tricky.elf)\n", path); return; }
@@ -462,6 +482,35 @@ static int row_cmp(const void *a, const void *b)
 {
     unsigned x = ((const SwRow *)a)->n, y = ((const SwRow *)b)->n;
     return x < y ? 1 : x > y ? -1 : 0;
+}
+
+/* The functions the link register points into, for samples in function k:
+ * for a leaf function (no frame of its own, LR untouched) its callers. A
+ * function that calls others shows itself here, and is left out. */
+static void sw_report_callers(const SwProfThread *t, int k, unsigned total)
+{
+    SwRow rows[64];
+    unsigned j, nr = 0, r, shown = 0;
+    if (!t->call) return;
+    for (j = 0; j < MAX_SITES; j++) {
+        int c;
+        uint32_t key;
+        if (!t->call[j].n || t->call[j].fn != k) continue;
+        c = sym_find(t->call[j].lr);
+        key = c >= 0 ? (uint32_t)c : 0xFFFFFFFFu;
+        for (r = 0; r < nr && rows[r].key != key; r++) { }
+        if (r == nr) { if (nr == 64) continue; rows[nr].key = key; rows[nr].n = 0; nr++; }
+        rows[r].n += t->call[j].n;
+    }
+    qsort(rows, nr, sizeof *rows, row_cmp);
+    for (j = 0; j < nr && shown < 4; j++) {
+        double pc = 100.0 * rows[j].n / total;
+        if (pc < 5.0) break;
+        if (rows[j].key == (uint32_t)k) continue;       /* not a leaf: LR is its own */
+        fprintf(stderr, "[PROFILE]            %3.0f%% from %s\n", pc,
+                rows[j].key == 0xFFFFFFFFu ? "(outside the program)" : s_syms[rows[j].key].name);
+        shown++;
+    }
 }
 
 static void sw_report(double secs)
@@ -512,8 +561,10 @@ static void sw_report(double secs)
                 fprintf(stderr, "[PROFILE]   %5.1f%%  (outside the program)\n", pc);
             else if (s_nsyms && (rows[j].key & 0x80000000u))
                 fprintf(stderr, "[PROFILE]   %5.1f%%  (no symbol, after %s)\n", pc, s_syms[rows[j].key & 0x7FFFFFFFu].name);
-            else if (s_nsyms)
+            else if (s_nsyms) {
                 fprintf(stderr, "[PROFILE]   %5.1f%%  %s\n", pc, s_syms[rows[j].key].name);
+                if (shown < 8) sw_report_callers(t, (int)rows[j].key, rows[j].n);
+            }
             else
                 fprintf(stderr, "[PROFILE]   %5.1f%%  0x%08X\n", pc, rows[j].key);
             shown++;
@@ -544,8 +595,11 @@ static void sw_prof_main(void *arg)
     int i;
     sscanf(e, "%lf,%lf", &start, &secs);
     svcSleepThread((s64)(start * 1e9));
-    for (i = 0; i < s_sw_n; i++)
+    syms_load();                        /* names the callers as it samples */
+    for (i = 0; i < s_sw_n; i++) {
         s_sw[i].site = calloc(MAX_SITES, sizeof *s_sw[i].site);
+        if (s_nsyms) s_sw[i].call = calloc(MAX_SITES, sizeof *s_sw[i].call);
+    }
     fprintf(stderr, "[PROFILE] sampling %d threads for %.1f s\n", s_sw_n, secs);
     t0 = armGetSystemTick();
     while ((double)(armGetSystemTick() - t0) / (double)f < secs) {
@@ -566,6 +620,8 @@ static void sw_prof_main(void *arg)
                 if (t->samples < 3) t->first_pc[t->samples] = ctx.pc.x;
                 t->samples++;
                 sw_record(t, ctx.pc.x - base < 0x100000000ull ? (uint32_t)(ctx.pc.x - base) : 0xFFFFFFFFu);
+                if (t->call && ctx.pc.x - base < 0x100000000ull && ctx.lr - base < 0x100000000ull)
+                    sw_record_call(t, sym_find((uint32_t)(ctx.pc.x - base)), (uint32_t)(ctx.lr - base));
             } else {
                 svcSetThreadActivity(t->h, ThreadActivity_Runnable);
                 t->lost++;
