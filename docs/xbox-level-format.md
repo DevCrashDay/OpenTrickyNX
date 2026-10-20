@@ -180,15 +180,20 @@ the draw cache from the records. **loader**
 | 0x000 | float ×4 | lightmap rect in the page: u, v, width, height (Garibaldi's first: 0, 0, 1/16, 1/16) | loader (`sub_000F7C90` reads +0/+4/+8/+0xC), file |
 | 0x010 | vec4 ×4 | texture u, v at the corners (a, b) = (0,0), (0,1), (1,0), (1,1); z, w = 1 | runtime (`terrain_seams.c:121`), file |
 | 0x050 | vec4 ×16 | control points `C[r][k]` at `0x50 + 0x40r + 0x10k`; `P(a,b) = Σ B_r(b) B_k(a) C[r][k]`, `B = (t³, t², t, 1)` | runtime (`terrain_seams.c:86`), loader |
-| 0x150 | vec3 ×2 | bounding box, low then high | file |
-| 0x168 | u32 ×6 | unknown; not in the PS2 record. Garibaldi's first patch: 0, 4, 4, 4, 4, 23 | file |
+| 0x150 | vec3 ×2 | bounding box, low then high: the min and max of the 16 source points | file |
+| 0x168 | u32 | surface type, the PS2 values (1 snow, 3 powder, 5 ice, 9 rock, 17 no collision, 18 show-off ramp) | file |
+| 0x16C | u32 ×4 | always 4 | file |
+| 0x17C | u32 | the `.ltg` grid cell that lists the patch, `x + y·width` (3884 of Garibaldi's 3885 patches) | file, `.ltg` |
 | 0x180 | vec4 ×4 | corner points, w = 1 (the first equals the first source point) | file |
 | 0x1C0 | i16 | diffuse texture, index into `.xsh`, sampler t0 | runtime (`terrain_seams.c:700`) |
 | 0x1C2 | i16 | normal map, index into `_B.xsh`, sampler t2, same coordinates as t0 | runtime (`terrain_seams.c:13`) |
 | 0x1C4 | i16 | lightmap page, index into `_L.xsh`, sampler t1 | runtime (`terrain_seams.c:760`) |
-| 0x1C6 | u16 | unknown; 0xFFFF on the first patch | file |
-| 0x1C8 | u16 ×130 | unknown, 260 bytes; not in the PS2 record | SSX-Library |
-| 0x2CC | u32 | unknown | SSX-Library |
+| 0x1C6 | u16 | always 0xFFFF | file |
+| 0x1C8 | u16 ×64 | vertex normals, indices into the 0x98 palette, vertex `8j+i` at (a, b) = (j/7, i/7) | file, rebuilt below |
+| 0x248 | u16 ×64 | vertex tangents (∂P/∂b), the same way | file, rebuilt below |
+| 0x2C8 | u16 | always 337 | file |
+| 0x2CA | u16 | 0x8000 on trick-only patches (with surface 18), else 0: the PS2 visibility word | file |
+| 0x2CC | u32 | always 156 | file |
 
 The game draws each patch as 8 × 8 vertices of 0x30 bytes in one 112-index strip (`terrain_seams.c:4-17`).
 
@@ -199,8 +204,21 @@ The PS2 record then goes straight to the corner points (0x168) and ends with sur
 and lightmap ids (0x1A8–0x1C0). The Xbox record inserts six words before the corner points, has three texture
 ids (adding the normal map), and its tail after the corner points is 272 bytes instead of 24.
 
-So PS2 terrain converts to Xbox terrain mostly by copying. What is still missing: what the six words at 0x168
-hold, where the surface type went, and what the 130-entry table at 0x1C8 is.
+So PS2 terrain converts to Xbox terrain mostly by copying; the surface type and visibility moved, and the
+normal and tangent tables are computed.
+
+Rebuilding the records from their source points (`tools/xbox_course/patches.py`) gives back retail Garibaldi:
+
+- Control points `C[r][k] = Σi Σj M[r][i] M[k][j] R[4i+j]` from the 16 Bezier points `R`, with
+  `M = [[-1,3,-3,1],[3,-6,3,0],[-3,3,0,0],[1,0,0,0]]`; largest difference 0.5 units on values near 10⁴.
+- Normal `-(∂P/∂a × ∂P/∂b)` and tangent `∂P/∂b`, each the nearest of the 4098 palette vectors. The median
+  error is 2.8°, about one palette step; 2.4% of vertices, almost all on patch edges, differ by more than 10°, so
+  the retail tool treats edges some other way. Averaging normals across shared edges made it worse.
+- The draw path reads only 16 of the 64 entries, through the byte table at XBE `0x1A2768`
+  (0, 16, 40, 56, 2, 18, 42, 58, 5, 21, 45, 61, 7, 23, 47, 63).
+
+The source-point section (0x54) holds 16 records of 20 bytes per patch: the point, then u, v = (i/3, j/3 − 1)
+for point `4i+j`. The 0x98 section is that palette: 4098 unit vectors, an octahedral sphere (4·32² + 2).
 
 ### A mistake in SSX-Library's Xbox reader
 
@@ -222,8 +240,8 @@ block, then `u16` width and height. **file** This is EA's FSH/SSH shape layout w
 | 0x7D | all 16 lightmap pages, 128 × 128 | A8R8G8B8, no mip levels |
 
 The 128 × 128 terrain textures carry four mip levels (128 down to 16); a block's size matches its format exactly.
-The PS2 bank uses 8-bit indexed pages (type 2) instead. OpenTricky reads lightmap texels with a swizzle
-(`terrain_seams.c:793`), so the uncompressed Xbox formats are probably stored swizzled. Not yet confirmed.
+The PS2 bank uses 8-bit indexed pages (type 2) instead. The lightmap pages are stored linear, not swizzled: read
+row by row a page is about twice as smooth as read in Morton order. Bytes are B, G, R, A.
 
 ## The other members
 
@@ -234,20 +252,45 @@ The PS2 bank uses 8-bit indexed pages (type 2) instead. OpenTricky reads lightma
 - `.aip`, `.sop` (AI and race paths): SSX-Library's shared `AIPSOPHandler.cs` walks all 90 and 32 paths and
   stops exactly at the race-line offset plus the 16 bytes it skips, as on PS2. **file**
 - `.adl` (sounds): `ADLHandler.cs`'s layout holds: 3085 entries, every sound offset inside the file. **file**
-- `.ltg`: same header layout as `LTGHandler.cs`; the world-grid cell size at 0x28 reads 10,000 as it does there.
-  Only the tool revision byte differs (Xbox `0x1E`, PS2 `0x1B`). **file**
+- `.ltg`: `LTGHandler.cs`'s layout exactly: `tools/xbox_course/ltg.py` reads Garibaldi's and writes it back
+  byte for byte. Cell size 10,000, 23 × 31 cells from (−20000, −30000), 4 × 4 nodes each. Only the tool revision
+  byte differs from the PS2 (`0x1E` against `0x1B`). Each patch is listed once, in the cell and node holding its
+  box centre, as SSX-Library's rebuilder does. **file**
+- Hash section (0x94): a size, then a count and offset (relative to the section) per kind: patches (0 on
+  Garibaldi), instances (3393), and so on. Each entry is a name hash and an index. The game finds the start and
+  finish markers this way: `Mdl_StageArea_Start_0` (0x0091F640) is instance 142, `Mdl_StageArea_Finish_0`
+  (0x0FC656E0) is 3269. **file**
 - `.map`: plain text, and its header itself says "PS2 Version", tool revision 30. **file**
 
 So the paths, sounds, grid and map should carry over from a PS2 build as they are, and collision probably does.
 What needs real conversion is the `.xbd` (terrain tail fields, instances, model meshes into the vertex pool) and
 the texture banks, plus a `_B.xsh` of normal maps.
 
+## Slopesmith terrain in a retail slot
+
+`tools/xbox_course/slopesmith_swap.py` puts a Slopesmith export's terrain into an unpacked course, the way
+Snowknife's `--bare-slot` repack does on the PS2:
+
+- the export's patches overwrite the start of the patch and source-point sections and the count drops; no other
+  offset moves, so nothing else in the `.xbd` needs fixing. Textures map to the slot's own by surface kind;
+- a new `.ltg` lists only the new patches and the two StageArea markers, so the slot's props, splines and
+  particles stay in the file but neither draw nor collide;
+- the start marker is turned and moved onto the export's race line; `.aip`/`.sop` are written from its JSON;
+- the export's lightmap pages replace the slot's first pages.
+
+```
+python3 tools/xbox_course/course_big.py unpack gari.big gari
+python3 tools/xbox_course/slopesmith_swap.py gari <export folder> gari-new
+python3 tools/xbox_course/course_big.py pack gari-new gari.big
+```
+
+It needs numpy and Pillow. The export's own textures and props are not carried over yet.
+
 ## Next
 
-1. Trace where the running game reads the instance words at 0x74–0x84, and the patch fields at 0x168 and 0x1C6–0x2CF.
-2. The 0x48/0x98 section (4098 records of 12 bytes).
-3. Compare the `.xsf` collision records with the PS2 ones.
-4. Then write the converter: a PS2 course (or a Slopesmith export) in, an Xbox `.big` out.
+1. Test the Slopesmith terrain swap on the Switch.
+2. Encode the export's own textures, and carry its props over (models into the vertex pool, `.xsf` records).
+3. Trace where the running game reads the instance words at 0x74–0x84.
 
 Done: a Garibaldi repacked with `course_big.py` (every member recompressed by it) loads and races normally in
 the Switch build (2026-10-20). The archive and compression side of a writer is settled.
