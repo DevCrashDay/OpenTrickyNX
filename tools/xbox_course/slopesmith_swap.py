@@ -19,12 +19,14 @@ from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import aipsop  # noqa: E402
+import dxt  # noqa: E402
 import ltg  # noqa: E402
 import patches as P  # noqa: E402
 
 START_HASH, FINISH_HASH = 0x0091F640, 0x0FC656E0
 FORMATION = np.array([-8.261667, 42.926667, 280.648346])   # stock six-rider formation, local to the start marker
-# surface -> retail Garibaldi (texture, normal map) of the same kind of ground
+# texture -> retail Garibaldi (texture, normal map) of the same kind of ground; the export's picture is
+# encoded over that texture, and the normal map is kept
 TEXTURES = {"snow.png": (12, 0), "oob.png": (28, 16), "offtrack.png": (20, 8), "powder.png": (19, 7),
             "ice.png": (93, 37), "rock.png": (30, 18)}
 
@@ -195,6 +197,28 @@ def main(src, export, out):
         L[o + 16:o + 16 + im.size[0] * im.size[1] * 4] = xbox_lightmap(np.asarray(im))
     open(lpath, "wb").write(L)
     print(f"{len(pj)} patches, {len(pages)} lightmap pages written")
+
+    # the export's textures over the slot textures they replace: same size, format and mip count,
+    # so no offset in the bank moves. The slot's props used them too, but those are delisted.
+    tpath = os.path.join(out, name + ".xsh")
+    T = bytearray(open(tpath, "rb").read())
+    used = sorted({p["TexturePath"] for p in pj})
+    for f in used:
+        o = u32(T, 20 + 8 * TEXTURES[f][0])
+        kind, (w, h) = T[o], struct.unpack_from("<2H", T, o + 4)
+        size = int.from_bytes(T[o + 1:o + 4], "little") - 16
+        if kind != 0x60:
+            raise SystemExit(f"texture {TEXTURES[f][0]} is not DXT1")
+        im = Image.open(os.path.join(export, "Textures", f)).convert("RGB")
+        data, mw = b"", w
+        while len(data) < size and mw >= 4:
+            data += dxt.encode(np.asarray(im.resize((mw, mw * h // w), Image.LANCZOS)))
+            mw //= 2
+        if len(data) != size:
+            raise SystemExit(f"texture {TEXTURES[f][0]}: {len(data)} bytes encoded for {size}")
+        T[o + 16:o + 16 + size] = data
+    open(tpath, "wb").write(T)
+    print(f"{len(used)} textures encoded")
 
 
 if __name__ == "__main__":

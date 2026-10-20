@@ -285,12 +285,13 @@ python3 tools/xbox_course/slopesmith_swap.py gari <export folder> gari-new
 python3 tools/xbox_course/course_big.py pack gari-new gari.big
 ```
 
-It needs numpy and Pillow. The export's own textures and props are not carried over yet.
+The export's textures are DXT1-encoded (`dxt.py`) over the slot textures they replace, at the same size
+and mip count, so the bank's offsets stay put. It needs numpy and Pillow. Props are not carried over yet.
 
 ## Next
 
 1. Test the Slopesmith terrain swap on the Switch.
-2. Encode the export's own textures, and carry its props over (models into the vertex pool, `.xsf` records).
+2. Carry the export's props over (models into the vertex pool, `.xsf` records).
 3. Trace where the running game reads the instance words at 0x74–0x84.
 
 Done: a Garibaldi repacked with `course_big.py` (every member recompressed by it) loads and races normally in
