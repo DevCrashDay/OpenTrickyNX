@@ -74,8 +74,10 @@ static int npad_connected(DWORD i)
 
 /* The console's own "Controllers" screen, for two players: who is player 1
  * and 2, a Joy-Con each held sideways, a Pro Controller... Opened by holding
- * - and + together on any controller (Back and Start on the Xbox pad); the
- * game waits while it is up. */
+ * - and + together (Back and Start on the Xbox pad), on one controller or
+ * two; the game waits while it is up. */
+static WORD s_chord_held[4];             /* - and + held, per controller */
+
 static void controller_setup(void)
 {
     HidLaControllerSupportArg arg;
@@ -133,6 +135,7 @@ DWORD XInputGetState(DWORD idx, XINPUT_STATE *st)
     c = s_pad[idx];
 #ifdef __SWITCH__
     if (c && !npad_connected(idx)) c = NULL;
+    if (!c) s_chord_held[idx] = 0;
 #endif
     if (!c) { SDL_UnlockMutex(s_lock); return ERROR_DEVICE_NOT_CONNECTED; }
     memset(&g, 0, sizeof g);
@@ -150,12 +153,22 @@ DWORD XInputGetState(DWORD idx, XINPUT_STATE *st)
     SDL_UnlockMutex(s_lock);
 #ifdef __SWITCH__
     {
-        static int chord[4];
+        /* - and + held together, on one controller or across two (a single
+         * Joy-Con has only one of them) */
+        static int chord;
         const WORD both = XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_BACK;
-        if ((g.wButtons & both) == both) {
-            if (!chord[idx]) { chord[idx] = 1; controller_setup(); }
+        WORD all = 0;
+        int k;
+        s_chord_held[idx] = g.wButtons & both;
+        for (k = 0; k < 4; k++) all |= s_chord_held[k];
+        if (all == both) {
+            if (!chord) {
+                chord = 1;
+                controller_setup();
+                memset(s_chord_held, 0, sizeof s_chord_held);
+            }
         } else {
-            chord[idx] = 0;
+            chord = 0;
         }
     }
 #endif
