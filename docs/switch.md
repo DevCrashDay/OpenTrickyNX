@@ -153,7 +153,8 @@ To build without one, for instance to see whether it is behind a problem, set `S
 SWITCH_OPTS="-DOT_GUEST_REGS=OFF -DOT_FAST_MEMCHECK=OFF" ./build_switch.sh "path/to/SSX Tricky (USA).iso"
 ```
 
-On Windows, `set SWITCH_OPTS=-DOT_GUEST_REGS=OFF` in the same window before `build_switch.bat`. The build
+On Windows, in the same window before `build_switch.bat`: `$env:SWITCH_OPTS = "-DOT_GUEST_REGS=OFF"` in
+PowerShell, or `set SWITCH_OPTS=-DOT_GUEST_REGS=OFF` in Command Prompt. The build
 folder keeps the setting: build again with `=ON` to go back.
 
 `port/tools/switch/codegen_bench/run.sh` (Linux, with qemu) puts a small x86 program through the translator and
