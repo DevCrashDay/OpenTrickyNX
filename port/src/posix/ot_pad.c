@@ -10,8 +10,13 @@
  * reads the state it keeps.
  */
 #include <windows.h>
+#include <stdio.h>
 #include <string.h>
 #include <SDL.h>
+
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 
 static SDL_GameController *s_pad[4];
 static SDL_mutex *s_lock;
@@ -56,6 +61,40 @@ static void scan(void)
     }
 }
 
+#ifdef __SWITCH__
+/* SDL's Switch driver always lists eight controllers, attached or not:
+ * index i reads player i+1 (index 0 also the Joy-Cons in the console's
+ * rails). Only a player the console has a controller for is connected, so
+ * the game sees a second pad when there is one and not before. */
+static int npad_connected(DWORD i)
+{
+    if (hidGetNpadStyleSet((HidNpadIdType)(HidNpadIdType_No1 + i))) return 1;
+    return i == 0 && hidGetNpadStyleSet(HidNpadIdType_Handheld) != 0;
+}
+
+/* The console's own "Controllers" screen, for two players: who is player 1
+ * and 2, a Joy-Con each held sideways, a Pro Controller... Opened by holding
+ * - and + together on any controller (Back and Start on the Xbox pad); the
+ * game waits while it is up. */
+static void controller_setup(void)
+{
+    HidLaControllerSupportArg arg;
+    HidLaControllerSupportResultInfo info;
+    Result rc;
+    hidLaCreateControllerSupportArg(&arg);
+    arg.hdr.player_count_min = 1;
+    arg.hdr.player_count_max = 2;
+    arg.hdr.enable_take_over_connection = 1;
+    arg.hdr.enable_left_justify = 1;
+    arg.hdr.enable_permit_joy_dual = 1;
+    arg.hdr.enable_single_mode = 0;
+    memset(&info, 0, sizeof info);
+    rc = hidLaShowControllerSupport(&info, &arg);
+    fprintf(stderr, "[PAD] controller screen: rc 0x%x, %d player(s), selected id %d\n",
+            (unsigned)rc, (int)info.player_count, (int)info.selected_id);
+}
+#endif
+
 static SHORT axis(SDL_GameController *c, SDL_GameControllerAxis a, int flip)
 {
     int v = SDL_GameControllerGetAxis(c, a);
@@ -92,6 +131,9 @@ DWORD XInputGetState(DWORD idx, XINPUT_STATE *st)
     SDL_LockMutex(s_lock);
     scan();
     c = s_pad[idx];
+#ifdef __SWITCH__
+    if (c && !npad_connected(idx)) c = NULL;
+#endif
     if (!c) { SDL_UnlockMutex(s_lock); return ERROR_DEVICE_NOT_CONNECTED; }
     memset(&g, 0, sizeof g);
     for (i = 0; i < sizeof map / sizeof map[0]; i++)
@@ -106,6 +148,17 @@ DWORD XInputGetState(DWORD idx, XINPUT_STATE *st)
     st->dwPacketNumber = s_packet[idx];
     st->Gamepad = g;
     SDL_UnlockMutex(s_lock);
+#ifdef __SWITCH__
+    {
+        static int chord[4];
+        const WORD both = XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_BACK;
+        if ((g.wButtons & both) == both) {
+            if (!chord[idx]) { chord[idx] = 1; controller_setup(); }
+        } else {
+            chord[idx] = 0;
+        }
+    }
+#endif
     return ERROR_SUCCESS;
 }
 

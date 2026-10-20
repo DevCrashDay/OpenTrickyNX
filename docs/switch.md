@@ -100,6 +100,12 @@ single Joy-Con held sideways. They act as Xbox pads through SDL: ZL and ZR are t
 **−** is Back, and the face buttons follow SDL's Switch layout. The bindings are the ones in `settings.ini`, as on
 Windows, and can be changed there.
 
+**Two players.** Player 2 is whichever controller the console counts as player 2. Hold **−** and press **+**
+on any controller to open the console's Controllers screen and choose who is player 1 and 2 (for example a
+Joy-Con each, held sideways); the game waits while it is open. Then pick a two-player race in the game as on
+the Xbox. A controller only counts as connected when the console has one for that player, so before the
+second controller is set up the game sees one pad.
+
 ## Rendering
 
 The Switch runs the OpenGL renderer through Mesa's Nouveau driver (devkitPro's switch-mesa). SMAA, soft shadows
