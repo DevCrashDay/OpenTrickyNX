@@ -18,6 +18,7 @@
  */
 #include "d3d8_vk_internal.h"
 #include "d3d8_gpuprof.h"
+#include "d3d8_fps_osd.h"
 #include "../kernel/xbox_perf.h"
 #include <SDL.h>
 #include <math.h>
@@ -337,6 +338,46 @@ static void host_update_title(void)
         memcpy(cur, title, sizeof cur);
         SDL_SetWindowTitle(s_win, title);
     }
+#endif
+}
+
+/* No title bar on the Switch: the frame rate goes over the picture. */
+static void host_draw_fps(int x, int y, int h, uint32_t dw, uint32_t dh)
+{
+#if defined(__SWITCH__)
+    static const VkClearColorValue k_col[2] = { { { 0.0f, 0.0f, 0.0f, 1.0f } },
+                                                { { 1.0f, 1.0f, 0.2f, 1.0f } } };
+    FpsOsdRect r[FPS_OSD_MAX_RECTS];
+    VkClearRect cr[FPS_OSD_MAX_RECTS];
+    VkClearAttachment a = { VK_IMAGE_ASPECT_COLOR_BIT, 0 };
+    int n, i, k = 0;
+    int fps = fps_osd_rate((long)s_frames, (unsigned)GetTickCount());
+    if (!s_show_fps) return;
+    n = fps_osd_rects(fps, x, y, h, r);
+    for (i = 0; i < n; i++) {
+        int x0 = r[i].x < 0 ? 0 : r[i].x, y0 = r[i].y < 0 ? 0 : r[i].y;
+        int x1 = r[i].x + r[i].w > (int)dw ? (int)dw : r[i].x + r[i].w;
+        int y1 = r[i].y + r[i].h > (int)dh ? (int)dh : r[i].y + r[i].h;
+        if (x1 <= x0 || y1 <= y0) { if (i == 0) return; continue; }
+        cr[k].rect.offset.x = x0;
+        cr[k].rect.offset.y = y0;
+        cr[k].rect.extent.width = (uint32_t)(x1 - x0);
+        cr[k].rect.extent.height = (uint32_t)(y1 - y0);
+        cr[k].baseArrayLayer = 0;
+        cr[k].layerCount = 1;
+        k++;
+        if (i == 0) {                   /* the box first, then the text over it */
+            a.clearValue.color = k_col[0];
+            vkCmdClearAttachments(vkd_cmd(), 1, &a, 1, cr);
+            k = 0;
+        }
+    }
+    if (k) {
+        a.clearValue.color = k_col[1];
+        vkCmdClearAttachments(vkd_cmd(), 1, &a, (uint32_t)k, cr);
+    }
+#else
+    (void)x; (void)y; (void)h; (void)dw; (void)dh;
 #endif
 }
 
@@ -1174,6 +1215,7 @@ static void host_present_impl(void)
             ry = ((int)dh - rh) / 2;
             /* the swapchain image starts cleared to black: the bars are done */
             vkd_blit(&s->scene_color, rx, ry, rw, rh, lut, VKD_TARGET_SWAPCHAIN);
+            host_draw_fps(rx, ry, rh, dw, dh);
         }
         host_update_title();
         ts = g_perf_on ? perf_now() : 0.0;

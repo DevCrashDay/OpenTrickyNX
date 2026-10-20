@@ -18,6 +18,8 @@ OT_MEM_MHZ=1600
 #OT_CORES=0
 
 # ── Speed and troubleshooting ───────────────────────────────────────
+# 1: the frame rate in the top-left corner of the picture; 0 hides it.
+XBOX_SHOW_FPS=1
 # 1: a timing summary in the log every 2 seconds (where the frame time goes).
 #XBOX_PERF=1
 # 0: run the game's vertex programs on the CPU, as before (slower; use it if

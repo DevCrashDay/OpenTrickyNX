@@ -1026,6 +1026,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
          * .ini, so a test run never rewrites the player's settings. */
         hostui_install(NULL, FALSE);
     }
+    {   /* XBOX_SHOW_FPS=1/0 wins over ShowFrameRate (the Switch's env.txt) */
+        const char *sf = getenv("XBOX_SHOW_FPS");
+        if (sf && sf[0]) d3d8_SetShowFps(sf[0] == '1');
+    }
 
     /* The fork options of the launcher ([Fork] in the .ini) become
      * the XBOX_* variables the code reads; one already set in the environment

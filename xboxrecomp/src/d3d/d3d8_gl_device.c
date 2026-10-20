@@ -19,6 +19,7 @@
  */
 #include "d3d8_gl_internal.h"
 #include "d3d8_gpuprof.h"
+#include "d3d8_fps_osd.h"
 #include "../kernel/xbox_perf.h"
 #include <SDL.h>
 #include <math.h>
@@ -1152,6 +1153,31 @@ static void host_present(void)
     perf_present_done(0.0);
 }
 
+/* No title bar on the Switch: the frame rate goes over the picture (on the
+ * window's framebuffer, y from the top here, from the bottom for GL). */
+static void host_draw_fps(int x, int y, int h, int dh)
+{
+#if defined(__SWITCH__)
+    FpsOsdRect r[FPS_OSD_MAX_RECTS];
+    int n, i;
+    int fps = fps_osd_rate((long)s_frames, (unsigned)GetTickCount());
+    if (!s_show_fps) return;
+    n = fps_osd_rects(fps, x, y, h, r);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glEnable(GL_SCISSOR_TEST);
+    for (i = 0; i < n; i++) {
+        if (i == 0) glClearColor(0.0f, 0.0f, 0.0f, 1.0f);      /* the box, then the text */
+        if (i == 1) glClearColor(1.0f, 1.0f, 0.2f, 1.0f);
+        glScissor(r[i].x, dh - (r[i].y + r[i].h), r[i].w, r[i].h);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glDisable(GL_SCISSOR_TEST);
+    gld_state_invalidate();
+#else
+    (void)x; (void)y; (void)h; (void)dh;
+#endif
+}
+
 static void host_present_impl(void)
 {
     GldState *s = &g_gld;
@@ -1202,6 +1228,7 @@ static void host_present_impl(void)
         }
         /* GL window y from the bottom: the box is centred either way. */
         gld_blit(s->scene_tex, rx, dh - (ry + rh), rw, rh, lut, 0);
+        host_draw_fps(rx, ry, rh, dh);
     }
     host_update_title();
     {
