@@ -108,7 +108,7 @@ method (vtable at 0x1A7AE8, models from slot 0x34, `sub_0013AA20`, then `sub_001
 `sub_001437F0`). Every layout below is what those methods read, and it parses all 648 Garibaldi models with
 nothing left over. **loader**, **file**
 
-**Model header**, 15 `u32`, the PS2 header:
+**Model header**, 15 `u32` (0x3C bytes); the PS2 fields, in the PS2 order:
 
 | Offset | Field |
 |---|---|
@@ -116,13 +116,13 @@ nothing left over. **loader**, **file**
 | 0x04 | object count |
 | 0x08 | offset of the object table, from the model (always 0x3C) |
 | 0x0C | material block id; the loader swaps it for a pointer into the material blocks |
-| 0x10, 0x14 | unknown, animation time (as PS2) |
-| 0x18 | three floats, PS2's "scale" |
-| 0x24 | mesh count of the high-detail meshes |
-| 0x28 | PS2's vertex count; not the number of vertices the strips use (model 0: 68 for 162) |
-| 0x2C | strip count of the high-detail meshes |
-| 0x30 | total strip indices of the high-detail meshes (model 0: 247 + 22 = 269) |
-| 0x34 | PS2's "non-tri" count |
+| 0x10–0x18 | unknown, and PS2's animation time; zero on model 0 |
+| 0x1C | three floats, PS2's "scale"; on model 0 they equal the bounding box's high corner |
+| 0x28 | mesh count of the high-detail meshes |
+| 0x2C | PS2's vertex count; not the number of vertices the strips use (model 0: 68 for 162) |
+| 0x30 | strip count of the high-detail meshes |
+| 0x34 | total strip indices of the high-detail meshes (model 0: 247 + 22 = 269) |
+| 0x38 | PS2's "non-tri" count |
 
 Mesh count, strip count and index total agree with the meshes on all 648 models.
 
