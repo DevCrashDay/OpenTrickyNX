@@ -137,6 +137,24 @@ ones do not. SMAA, soft shadows and the post chain are not in the Vulkan rendere
 | `XBOX_VK_PIPECACHE=0` | No pipeline cache file (or a path for it). |
 | `XBOX_VK_DEBUG=1` | Writes the source of any shader that fails to compile to the log. |
 
+### Speed options
+
+Two build options make the translated game faster on the Switch; both are on by default.
+
+- `OT_GUEST_REGS`: the game's x86 registers live in the Switch CPU's own registers instead of memory, and the
+  rest of its per-thread CPU state (the x87 float stack and the like) sits behind a register too.
+- `OT_FAST_MEMCHECK`: every game memory access is checked with a single compare. Null
+  pointers then land on game address 0 instead of a page of their own, which the game cannot tell apart.
+
+To build without one, for instance to see whether it is behind a problem, set `SWITCH_OPTS` before building:
+
+```bash
+SWITCH_OPTS="-DOT_GUEST_REGS=OFF -DOT_FAST_MEMCHECK=OFF" ./build_switch.sh "path/to/SSX Tricky (USA).iso"
+```
+
+On Windows, `set SWITCH_OPTS=-DOT_GUEST_REGS=OFF` in the same window before `build_switch.bat`. The build
+folder keeps the setting: build again with `=ON` to go back.
+
 ## Troubleshooting
 
 - **A message says the disc image is missing**: check that `game/default.xbe` is there, or put the `.iso` in `sdmc:/switch/opentricky/`, or give its full

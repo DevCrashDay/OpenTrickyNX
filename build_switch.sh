@@ -19,6 +19,9 @@
 #   GLSLANG_DIR  glslang built for the Switch (port/tools/build_glslang_switch.sh;
 #                built into build/glslang-switch on first use when not set)
 #
+# SWITCH_OPTS passes CMake options to the build folder, which keeps them for
+# later builds, e.g. SWITCH_OPTS="-DOT_GUEST_REGS=OFF" (docs/switch.md).
+#
 # Result: dist/switch/opentricky/"SSX Tricky.nro". Copy that folder to
 # sdmc:/switch/ with your disc image in it -- see docs/switch.md. The build
 # contains code translated from your copy of the game: keep it to yourself.
@@ -154,6 +157,7 @@ fi
 if [ "$NATIVE" = 1 ]; then
     CMAKE="$SWITCH_CMAKE"
     [ -f "$BUILD/CMakeCache.txt" ] || eval "${CONFIGURE/cmake/$CMAKE}"
+    [ -z "${SWITCH_OPTS:-}" ] || cmake $SWITCH_OPTS "$BUILD"
     cmake --build "$BUILD" -j "$(nproc 2>/dev/null || echo 4)"
 else
     if [ "$ON_WINDOWS" = 1 ]; then
@@ -166,6 +170,7 @@ else
     docker run --rm "${USER_ARGS[@]}" ${DOCKER_VK[@]+"${DOCKER_VK[@]}"} -v "$MOUNT:/src" -w /src devkitpro/devkita64 bash -c "
         set -e
         [ -f $BUILD/CMakeCache.txt ] || ${CONFIGURE/cmake//opt/devkitpro/portlibs/switch/bin/aarch64-none-elf-cmake}
+        ${SWITCH_OPTS:+cmake $SWITCH_OPTS $BUILD}
         cmake --build $BUILD -j \$(nproc)"
 fi
 

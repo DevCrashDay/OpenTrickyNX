@@ -372,10 +372,18 @@ void xbox_profile_register_thread(int core)
         s_sw_on = 1;
     }
     mutexLock(&s_sw_lock);
-    if (s_sw_n < MAX_THREADS) {
-        s_sw[s_sw_n].h = threadGetCurHandle();
-        s_sw[s_sw_n].core = core;
-        s_sw_n++;
+    {
+        /* A thread that moves again keeps its one entry, with its new core:
+         * listed twice it was sampled twice, and showed up as two threads. */
+        Handle h = threadGetCurHandle();
+        int i;
+        for (i = 0; i < s_sw_n && s_sw[i].h != h; i++) { }
+        if (i < s_sw_n) s_sw[i].core = core;
+        else if (s_sw_n < MAX_THREADS) {
+            s_sw[s_sw_n].h = h;
+            s_sw[s_sw_n].core = core;
+            s_sw_n++;
+        }
     }
     mutexUnlock(&s_sw_lock);
 }
@@ -395,7 +403,7 @@ static void sw_record(SwProfThread *t, uint32_t off)
     }
 }
 
-typedef struct { uint32_t addr; char *name; } SwSym;
+typedef struct { uint32_t addr, size; char *name; } SwSym;  /* size 0: unknown */
 static SwSym *s_syms;
 static int s_nsyms;
 
@@ -405,7 +413,7 @@ static int sym_cmp(const void *a, const void *b)
     return x < y ? -1 : x > y;
 }
 
-/* "ADDR T name" lines of nm, next to the .nro. */
+/* "ADDR [SIZE] T name" lines of nm, next to the .nro (W: weak functions). */
 static void syms_load(void)
 {
     char path[512], line[512];
@@ -418,15 +426,20 @@ static void syms_load(void)
     f = fopen(path, "r");
     if (!f) { fprintf(stderr, "[PROFILE] no %s: offsets only (addr2line -f -e ssx_tricky.elf)\n", path); return; }
     while (fgets(line, sizeof line, f)) {
-        unsigned long long a;
+        unsigned long long a, sz = 0;
         char type, name[400];
-        if (sscanf(line, "%llx %c %399s", &a, &type, name) != 3 || (type != 'T' && type != 't')) continue;
+        if (sscanf(line, "%llx %llx %c %399s", &a, &sz, &type, name) != 4) {
+            sz = 0;
+            if (sscanf(line, "%llx %c %399s", &a, &type, name) != 3) continue;
+        }
+        if (type != 'T' && type != 't' && type != 'W' && type != 'w') continue;
         if (s_nsyms == cap) {
             SwSym *n = (SwSym *)realloc(s_syms, sizeof *n * (size_t)(cap = cap ? cap * 2 : 8192));
             if (!n) break;
             s_syms = n;
         }
         s_syms[s_nsyms].addr = (uint32_t)a;
+        s_syms[s_nsyms].size = (uint32_t)sz;
         s_syms[s_nsyms].name = strdup(name);
         s_nsyms++;
     }
@@ -476,7 +489,12 @@ static void sw_report(double secs)
                 int k = key != 0xFFFFFFFFu ? sym_find(key) : -1;
                 /* past the last function: not the program's code */
                 if (k == s_nsyms - 1 && key - s_syms[k].addr > 0x10000) k = -1;
-                key = k >= 0 ? (uint32_t)k : 0xFFFFFFFFu;
+                /* past the end of the function it follows: code with no
+                 * symbol of its own, counted apart rather than lent a name */
+                if (k >= 0 && s_syms[k].size && key - s_syms[k].addr >= s_syms[k].size)
+                    key = 0x80000000u | (uint32_t)k;
+                else
+                    key = k >= 0 ? (uint32_t)k : 0xFFFFFFFFu;
             }
             for (r = 0; r < nr && rows[r].key != key; r++) { }
             if (r == nr) { rows[nr].key = key; rows[nr].n = 0; nr++; }
@@ -490,9 +508,12 @@ static void sw_report(double secs)
         for (j = 0; j < nr && shown < 30; j++) {
             double pc = 100.0 * rows[j].n / t->samples;
             if (pc < 0.5) break;
-            if (s_nsyms)
-                fprintf(stderr, "[PROFILE]   %5.1f%%  %s\n", pc,
-                        rows[j].key != 0xFFFFFFFFu ? s_syms[rows[j].key].name : "(outside the program)");
+            if (s_nsyms && rows[j].key == 0xFFFFFFFFu)
+                fprintf(stderr, "[PROFILE]   %5.1f%%  (outside the program)\n", pc);
+            else if (s_nsyms && (rows[j].key & 0x80000000u))
+                fprintf(stderr, "[PROFILE]   %5.1f%%  (no symbol, after %s)\n", pc, s_syms[rows[j].key & 0x7FFFFFFFu].name);
+            else if (s_nsyms)
+                fprintf(stderr, "[PROFILE]   %5.1f%%  %s\n", pc, s_syms[rows[j].key].name);
             else
                 fprintf(stderr, "[PROFILE]   %5.1f%%  0x%08X\n", pc, rows[j].key);
             shown++;
