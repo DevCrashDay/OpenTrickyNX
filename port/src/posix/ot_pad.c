@@ -11,6 +11,7 @@
  */
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <SDL.h>
 
@@ -68,8 +69,25 @@ static void scan(void)
  * the game sees a second pad when there is one and not before. */
 static int npad_connected(DWORD i)
 {
+    static int all = -1;
+    if (all < 0) { const char *e = getenv("OT_PAD_ALL"); all = e && e[0] == '1'; }
+    if (all) return 1;                  /* OT_PAD_ALL=1: as before, all four */
     if (hidGetNpadStyleSet((HidNpadIdType)(HidNpadIdType_No1 + i))) return 1;
     return i == 0 && hidGetNpadStyleSet(HidNpadIdType_Handheld) != 0;
+}
+
+/* One log line whenever the console's controllers change: which style each
+ * player has (handheld 0x2, a pair 0x4, single Joy-Cons 0x8/0x10, Pro 0x1). */
+static void npad_log(void)
+{
+    static u32 last[3] = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
+    u32 h = hidGetNpadStyleSet(HidNpadIdType_Handheld);
+    u32 a = hidGetNpadStyleSet(HidNpadIdType_No1), b = hidGetNpadStyleSet(HidNpadIdType_No2);
+    if (h != last[0] || a != last[1] || b != last[2]) {
+        fprintf(stderr, "[PAD] controllers: handheld 0x%x, player 1 0x%x, player 2 0x%x\n",
+                (unsigned)h, (unsigned)a, (unsigned)b);
+        last[0] = h; last[1] = a; last[2] = b;
+    }
 }
 
 /* The console's own "Controllers" screen, for two players: who is player 1
@@ -134,6 +152,7 @@ DWORD XInputGetState(DWORD idx, XINPUT_STATE *st)
     scan();
     c = s_pad[idx];
 #ifdef __SWITCH__
+    if (idx == 0) npad_log();
     if (c && !npad_connected(idx)) c = NULL;
     if (!c) s_chord_held[idx] = 0;
 #endif
@@ -152,6 +171,19 @@ DWORD XInputGetState(DWORD idx, XINPUT_STATE *st)
     st->Gamepad = g;
     SDL_UnlockMutex(s_lock);
 #ifdef __SWITCH__
+    {   /* what SDL reads for player 1, before the bindings: one line per change */
+        static WORD last = 0xFFFF;
+        static int lines;
+        WORD sticks = (WORD)((g.sThumbLX < -16000) | (g.sThumbLX > 16000) << 1 |
+                             (g.sThumbLY < -16000) << 2 | (g.sThumbLY > 16000) << 3);
+        WORD now = g.wButtons ^ (WORD)(sticks << 12) ^ (WORD)((g.bLeftTrigger > 60) << 10);
+        if (idx == 0 && now != last && lines < 300) {
+            last = now;
+            lines++;
+            fprintf(stderr, "[PAD] player 1: buttons 0x%04x, left stick %d %d, triggers %d %d\n",
+                    (unsigned)g.wButtons, g.sThumbLX, g.sThumbLY, g.bLeftTrigger, g.bRightTrigger);
+        }
+    }
     {
         /* - and + held together, on one controller or across two (a single
          * Joy-Con has only one of them) */

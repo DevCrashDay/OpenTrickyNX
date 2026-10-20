@@ -86,3 +86,7 @@ OT_MEM_MHZ=1600
 #XBOX_UNLOCK_ALL=0
 # 1: keep a backup copy of the save.
 #XBOX_SAVE_BACKUP=1
+
+# 1: every controller slot counts as connected, as before the two-player
+# change (to compare when a controller does not respond).
+#OT_PAD_ALL=0
