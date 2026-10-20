@@ -276,7 +276,8 @@ Snowknife's `--bare-slot` repack does on the PS2:
 - a new `.ltg` lists only the new patches and the two StageArea markers, so the slot's props, splines and
   particles stay in the file but neither draw nor collide;
 - the start marker is turned and moved onto the export's race line; `.aip`/`.sop` are written from its JSON;
-- the export's lightmap pages replace the slot's first pages.
+- the export's lightmap pages replace the slot's first pages, decoded from the PS2 blend form (light =
+  (0.5 − rgb)·alpha/128) into the plain light colour the Xbox page holds.
 
 ```
 python3 tools/xbox_course/course_big.py unpack gari.big gari

@@ -75,6 +75,17 @@ def lights(x):
     return out
 
 
+def xbox_lightmap(rgba):
+    """A Slopesmith (PS2) lightmap page as an Xbox one. The PS2 page holds a GS blend residual: light =
+    (0.5 - rgb) * alpha / 128 (Slopesmith decodeLightmapTexel, white diffuse); the Xbox page holds the light."""
+    a = rgba.astype(float)
+    light = np.clip((0.5 - a[:, :, :3] / 255) * (a[:, :, 3:4] / 128), 0, 1)
+    out = np.empty(rgba.shape, np.uint8)
+    out[:, :, :3] = np.round(light[:, :, ::-1] * 255)   # B, G, R
+    out[:, :, 3] = 255
+    return out.tobytes()
+
+
 def regenerate(template, boxes, inst_boxes, light_list, size=10000.0, nw=4):
     """RegenerateCentreLTG: each patch and instance listed once, in the cell and node holding its box centre."""
     g = dict(head=template["head"], size=size, nw=nw, nsize=size / nw)
@@ -181,8 +192,7 @@ def main(src, export, out):
         o = u32(L, 20 + 8 * k)
         if (L[o], *struct.unpack_from("<2H", L, o + 4)) != (0x7D, *im.size):
             raise SystemExit(f"lightmap page {k} is not a {im.size} A8R8G8B8 page")
-        a = np.asarray(im)[:, :, [2, 1, 0, 3]]
-        L[o + 16:o + 16 + a.size] = a.tobytes()
+        L[o + 16:o + 16 + im.size[0] * im.size[1] * 4] = xbox_lightmap(np.asarray(im))
     open(lpath, "wb").write(L)
     print(f"{len(pj)} patches, {len(pages)} lightmap pages written")
 
