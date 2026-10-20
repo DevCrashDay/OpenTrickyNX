@@ -159,9 +159,13 @@ static BOOL s_crash_dialog = FALSE;
  * code below reads whichever thread's state it runs on, which is correct: a
  * crash is always reported from the thread that actually faulted. */
 
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else CPU registers: xbox_guest_regs.h */
 extern __thread uint32_t g_eax, g_ecx, g_edx, g_esp;
 extern __thread uint32_t g_ebx, g_esi, g_edi;
+#endif
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread uint32_t g_seh_ebp;
+#endif
 void recomp_probe_init_from_env(void);
 extern ptrdiff_t g_xbox_mem_offset;
 
@@ -1644,7 +1648,7 @@ static LONG WINAPI recomp_crash_filter(EXCEPTION_POINTERS *ep)
 
 #endif /* _WIN32 */
 
-int main(int argc, char **argv)
+static int ot_main(int argc, char **argv)
 {
 #ifndef _WIN32
     ot_set_args(argc, argv);    /* the command line, the executable's folder */
@@ -1665,5 +1669,26 @@ int main(int argc, char **argv)
     }
 #else
     return WinMain(GetModuleHandle(NULL), NULL, GetCommandLineA(), SW_SHOW);
+#endif
+}
+
+#ifdef XBOX_GUEST_REGS_IN_CPU
+/* The guest registers are CPU registers here (xbox_guest_regs.h): start them
+ * at 0, as the __thread copies did, and give the C runtime its own back. */
+struct ot_main_args { int argc; char **argv; };
+static void *ot_main_entry(void *p)
+{
+    struct ot_main_args *a = (struct ot_main_args *)p;
+    return (void *)(intptr_t)ot_main(a->argc, a->argv);
+}
+#endif
+
+int main(int argc, char **argv)
+{
+#ifdef XBOX_GUEST_REGS_IN_CPU
+    struct ot_main_args a = { argc, argv };
+    return (int)(intptr_t)xbox_guest_regs_call(ot_main_entry, &a);
+#else
+    return ot_main(argc, argv);
 #endif
 }

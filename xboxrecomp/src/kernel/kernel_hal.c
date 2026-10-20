@@ -44,7 +44,9 @@ static XBOX_THREAD_LOCAL KIRQL g_current_irql = PASSIVE_LEVEL;
  */
 static void publish_irql(KIRQL level)
 {
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
     extern __thread uint32_t g_xbox_tib_va;
+#endif
     extern ptrdiff_t g_xbox_mem_offset;
     if (g_xbox_tib_va)
         *(volatile unsigned char *)((uintptr_t)(g_xbox_tib_va + XBOX_KPCR_IRQL)
@@ -249,7 +251,9 @@ static void bugcheck_context(const char *what, ULONG code)
      * read and where from: a thread with no TIB of its own resolves fs:[n]
      * into guest page 0, and there the "IRQL" is whatever that page holds. */
     {
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
         extern __thread uint32_t g_xbox_tib_va;
+#endif
         extern ptrdiff_t g_xbox_mem_offset;
         unsigned char seen = *(volatile unsigned char *)
             ((uintptr_t)(g_xbox_tib_va + XBOX_KPCR_IRQL) + g_xbox_mem_offset);

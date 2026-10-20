@@ -216,7 +216,9 @@ void xbox_diag_watch_clear(void)
     g_watch_pending = NULL;
 }
 
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else CPU registers: xbox_guest_regs.h */
 extern __thread uint32_t g_eax, g_ecx, g_edx, g_ebx, g_esi, g_edi, g_esp;
+#endif
 extern volatile unsigned g_main_loc;   /* stamped in Application_RunMainLoop */
 extern volatile unsigned g_last_loc;   /* stamped across the generated code */
 

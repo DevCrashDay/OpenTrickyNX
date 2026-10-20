@@ -172,7 +172,9 @@ static void *g_gpu_mmio_base = NULL;   /* fake NV2A MMIO aperture, Xbox VA 0xFD0
  * g_xbox_tib_va is read by xbox_resolve_uncached_alias on every guest memory
  * access below 0x100, so it lives here beside the other per-thread register
  * state and is declared in recomp_types.h. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread uint32_t g_xbox_tib_va = 0;
+#endif
 
 static volatile LONG g_tib_next_slot = 0;
 
@@ -930,28 +932,84 @@ ptrdiff_t g_xbox_mem_offset = 0;
  * first place. Safe for threads CreateThread'd after this EXE's own TLS is initialized
  * (the historical DLL-TLS caveat with __thread doesn't apply to a statically
  * linked EXE's own threads). */
+#ifndef XBOX_GUEST_REGS_IN_CPU
 __thread uint32_t g_eax = 0, g_ecx = 0, g_edx = 0, g_esp = 0;
-__thread int g_recomp_cf_in = 0;  /* carry across a lifted function boundary */
 __thread uint32_t g_ebx = 0, g_esi = 0, g_edi = 0;
+#else
+/* Here they live in w19-w25 instead (xbox_guest_regs.h). A thread that runs
+ * guest code starts through this: x19-x25 zeroed like the __thread copies,
+ * x26 = this thread's xbox_gtls, and the caller's values back on return,
+ * since whatever started the thread (pthread, libnx) expects its
+ * callee-saved registers kept. */
+__thread struct xbox_gtls t_xbox_gtls = { .x87_cw = 0x027F };
+struct xbox_gtls *xbox_gtls_self(void);
+struct xbox_gtls *xbox_gtls_self(void) { return &t_xbox_gtls; }
+__asm__(
+    "    .text\n"
+    "    .global xbox_guest_regs_call\n"
+    "    .type   xbox_guest_regs_call, %function\n"
+    "    .align  2\n"
+    "xbox_guest_regs_call:\n"
+    "    stp  x29, x30, [sp, #-96]!\n"
+    "    mov  x29, sp\n"
+    "    stp  x19, x20, [sp, #16]\n"
+    "    stp  x21, x22, [sp, #32]\n"
+    "    stp  x23, x24, [sp, #48]\n"
+    "    stp  x25, x26, [sp, #64]\n"
+    "    stp  x27, x0,  [sp, #80]\n"
+    "    mov  x19, x1\n"
+    "    bl   xbox_gtls_self\n"
+    "    mov  x26, x0\n"
+    "    mov  x0, x19\n"
+    "    ldr  x16,      [sp, #88]\n"
+    "    mov  x19, xzr\n"
+    "    mov  x20, xzr\n"
+    "    mov  x21, xzr\n"
+    "    mov  x22, xzr\n"
+    "    mov  x23, xzr\n"
+    "    mov  x24, xzr\n"
+    "    mov  x25, xzr\n"
+    "    mov  x27, xzr\n"
+    "    blr  x16\n"
+    "    ldp  x19, x20, [sp, #16]\n"
+    "    ldp  x21, x22, [sp, #32]\n"
+    "    ldp  x23, x24, [sp, #48]\n"
+    "    ldp  x25, x26, [sp, #64]\n"
+    "    ldr  x27,      [sp, #80]\n"
+    "    ldp  x29, x30, [sp], #96\n"
+    "    ret\n"
+    "    .size   xbox_guest_regs_call, . - xbox_guest_regs_call\n");
+#endif
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
+__thread int g_recomp_cf_in = 0;  /* carry across a lifted function boundary */
+#endif
 
 /* SEH frame pointer bridge (see recomp_types.h for explanation) -- thread-local for the
  * same reason as the registers above. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread uint32_t g_seh_ebp = 0;
+#endif
 
 /* CRT_ftol_TruncateToInt64's FPU-stack cross-call bridge (see recomp_types.h for the
  * full explanation) -- thread-local for the same reason as the registers above. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread double g_ftol_arg = 0.0;
+#endif
 
 /* Shared FPU stack for the CRT_ftol_TruncateToInt64 fragment chain (see recomp_types.h
  * for the full explanation) -- thread-local for the same reason as the registers above. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread double g_ftol_fp_stack[8] = {0};
 __thread int g_ftol_fp_top = 0;
+#endif
 
 /* Shadow of real x87 ST(0), mirrored by every generated fp_push (see recomp_types.h). */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread double g_x87_st0 = 0.0;
 __thread int g_fpu_cmp = 0;
 __thread int g_str_ne = 0;
 __thread uint16_t g_x87_cw = 0x027F;
+#endif
 
 /* XBOX_X87_COMPAT (diagnostic): bit 0 restores the old `fnstsw ax`
  * (AH only), bit 1 the old no-op `fxam`. Read once, lazily. */
@@ -968,8 +1026,10 @@ int x87_compat_init(void)
     return g_x87_compat;
 }
 
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread double g_fp_stack[8];
 __thread int g_fp_top = 0;
+#endif
 
 /* XBOX_X87_RET: how a float-returning call hands ST(0) to its
  * caller -- see x87_ret in recomp_types.h. */

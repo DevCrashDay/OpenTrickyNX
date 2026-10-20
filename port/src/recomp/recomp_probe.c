@@ -93,9 +93,11 @@ static uint32_t eval_term(scan_t *s)
     }
     {
         static const char *names[8] = { "eax", "ecx", "edx", "esp", "ebx", "esi", "edi", "ebp" };
-        uint32_t *slots[8] = { &g_eax, &g_ecx, &g_edx, &g_esp, &g_ebx, &g_esi, &g_edi, &g_seh_ebp };
+        /* Values, not addresses: the registers may be CPU registers
+         * (xbox_guest_regs.h). */
+        const uint32_t vals[8] = { g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi, g_seh_ebp };
         for (int i = 0; i < 8; i++)
-            if (!strncmp(s->p, names[i], 3)) { s->p += 3; return *slots[i]; }
+            if (!strncmp(s->p, names[i], 3)) { s->p += 3; return vals[i]; }
     }
     s->bad = 1;
     return 0;

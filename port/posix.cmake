@@ -27,6 +27,25 @@ option(SSX_STUB_GEN "Link without the translated game (build check only)" OFF)
 
 set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../xboxrecomp" CACHE PATH
     "Path to the xboxrecomp toolkit root directory")
+
+# The game's x86 registers in CPU registers instead of thread-local memory
+# (xboxrecomp/src/kernel/xbox_guest_regs.h). Every C file of the program,
+# xboxrecomp's included, gets the header first, so none of them uses those
+# registers for anything else. OFF: the thread-local registers, as elsewhere.
+if(NINTENDO_SWITCH)
+    option(OT_GUEST_REGS "Keep the game's x86 registers in CPU registers" ON)
+    if(OT_GUEST_REGS)
+        add_compile_definitions(XBOX_GUEST_REGS=1)
+        add_compile_options("$<$<COMPILE_LANGUAGE:C>:-include${XBOXRECOMP_DIR}/src/kernel/xbox_guest_regs.h>")
+    endif()
+    # Null-pointer accesses absorbed by guest page 0 rather than a page of
+    # their own, for a cheaper check on every guest memory access
+    # (port/src/recomp/recomp_types.h, XBOX_NULL_IN_PAGE0).
+    option(OT_FAST_MEMCHECK "One compare per guest memory access" ON)
+    if(OT_FAST_MEMCHECK)
+        add_compile_definitions(XBOX_NULL_IN_PAGE0=1)
+    endif()
+endif()
 add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 
 file(GLOB RECOMP_GEN_SOURCES CONFIGURE_DEPENDS "src/recomp/gen/*.c")

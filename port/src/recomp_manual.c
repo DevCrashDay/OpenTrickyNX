@@ -50,8 +50,10 @@
 extern void (*perf_lookup(unsigned int xbox_va))(void);
 
 /* Per-thread SSE / MMX register files (see recomp_types.h). */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread recomp_xmm_t g_xmm[8];
 __thread uint64_t g_mm[8];
+#endif
 
 
 
@@ -78,7 +80,9 @@ typedef void (*recomp_func_t)(void);
 
 /* ── Register state (defined in xbox_memory_layout.c) ──────── */
 
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else CPU registers: xbox_guest_regs.h */
 extern __thread uint32_t g_eax;
+#endif
 extern ptrdiff_t g_xbox_mem_offset;
 
 /* ── Manual function overrides ─────────────────────────────── */

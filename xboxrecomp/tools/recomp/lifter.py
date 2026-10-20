@@ -1871,6 +1871,11 @@ class Lifter:
             if nops >= 2:
                 src = _fmt_operand_read(ops[1]) if ops[1].type != "reg" or not ops[1].reg.startswith("xmm") else _sse_read(ops[1])
                 if ops[0].type == "reg" and ops[0].reg.startswith("xmm"):
+                    if ops[1].type == "reg" and not ops[1].reg.startswith("xmm"):
+                        # Through a temporary: a guest register's address
+                        # cannot be taken when it is a CPU register
+                        # (xboxrecomp/src/kernel/xbox_guest_regs.h).
+                        return [f"{{ uint32_t _movd = {src}; memcpy(&{ops[0].reg}, &_movd, 4); }} /* movd to xmm */"]
                     return [f"memcpy(&{ops[0].reg}, &{src}, 4); /* movd to xmm */"]
                 else:
                     return [f"{_fmt_operand_write(ops[0], src)} /* movd */"]

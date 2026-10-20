@@ -655,7 +655,7 @@ BOOL ReleaseMutex(HANDLE h)
 /* Threads                                                               */
 /* ===================================================================== */
 
-static void *thread_trampoline(void *arg)
+static void *thread_trampoline_body(void *arg)
 {
     w32_object *o = (w32_object *)arg;
     t_self_obj = o;
@@ -681,6 +681,15 @@ static void *thread_trampoline(void *arg)
 
     obj_release(o);   /* drop the trampoline's reference */
     return NULL;
+}
+
+static void *thread_trampoline(void *arg)
+{
+#ifdef XBOX_GUEST_REGS_IN_CPU
+    return xbox_guest_regs_call(thread_trampoline_body, arg);   /* guest code may run here */
+#else
+    return thread_trampoline_body(arg);
+#endif
 }
 
 HANDLE CreateThread(LPSECURITY_ATTRIBUTES sa, SIZE_T stackSize,
@@ -871,7 +880,7 @@ DWORD SleepEx(DWORD ms, BOOL alertable)
 /* Timer queues (one helper thread per timer)                            */
 /* ===================================================================== */
 
-static void *timer_thread(void *arg)
+static void *timer_thread_body(void *arg)
 {
     w32_object *o = (w32_object *)arg;
     int once = (o->timer_period == 0);
@@ -891,6 +900,15 @@ static void *timer_thread(void *arg)
     }
     obj_release(o);
     return NULL;
+}
+
+static void *timer_thread(void *arg)
+{
+#ifdef XBOX_GUEST_REGS_IN_CPU
+    return xbox_guest_regs_call(timer_thread_body, arg);   /* guest code may run here */
+#else
+    return timer_thread_body(arg);
+#endif
 }
 
 HANDLE CreateTimerQueue(void)
@@ -950,7 +968,7 @@ BOOL DeleteTimerQueueTimer(HANDLE timerQueue, HANDLE timer, HANDLE completionEve
 
 struct w32_tp_args { PTP_SIMPLE_CALLBACK cb; PVOID ctx; };
 
-static void *w32_tp_trampoline(void *arg)
+static void *w32_tp_trampoline_body(void *arg)
 {
     struct w32_tp_args *a = (struct w32_tp_args *)arg;
 #if defined(__SWITCH__)
@@ -959,6 +977,15 @@ static void *w32_tp_trampoline(void *arg)
     a->cb(NULL, a->ctx);
     free(a);
     return NULL;
+}
+
+static void *w32_tp_trampoline(void *arg)
+{
+#ifdef XBOX_GUEST_REGS_IN_CPU
+    return xbox_guest_regs_call(w32_tp_trampoline_body, arg);   /* guest code may run here */
+#else
+    return w32_tp_trampoline_body(arg);
+#endif
 }
 
 BOOL TrySubmitThreadpoolCallback(PTP_SIMPLE_CALLBACK callback,
