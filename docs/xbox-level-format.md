@@ -277,8 +277,12 @@ Snowknife's `--bare-slot` repack does on the PS2:
   particles stay in the file but neither draw nor collide;
 - the start marker is turned and moved onto the export's race line; `.aip`/`.sop` are written from its JSON;
 - the export's props go into hidden props of the slot (`models.py`): each distinct mesh into a slot model with
-  room for its vertices and strip, each placement into a slot instance whose `.xsf` object-properties index
-  (one `u32` per instance) is set to a visible, no-contact entry. The finish marker moves to the export's;
+  room for its vertices and strip, each placement into a slot instance. Each instance's `.xsf` object-properties
+  index (one `u32` per instance) points at a record built from the export's contact fields (flags 1 visible,
+  32 player collision, 128 bounce; mode 2 bounding box), found among the records or written over one only
+  hidden props used. Triangle-proxy collision falls back to the bounding box until collision models are
+  written. The StageArea markers take the export's mesh and contact, so the slot's start platform is gone,
+  and the finish marker moves to the export's;
 - the export's lightmap pages replace the slot's first pages, decoded from the PS2 blend form (light =
   (0.5 − rgb)·alpha/128) into the plain light colour the Xbox page holds.
 
@@ -294,7 +298,7 @@ and mip count, so the bank's offsets stay put. It needs numpy and Pillow. `slope
 ## Next
 
 1. Test the Slopesmith terrain swap on the Switch.
-2. Prop collision (`.xsf` collision models) and prop materials; props now wear the slot model's material.
+2. Triangle-proxy collision (`.xsf` collision models) and prop materials; props now wear the slot model's material.
 3. Trace where the running game reads the instance words at 0x74–0x84.
 
 Done: a Garibaldi repacked with `course_big.py` (every member recompressed by it) loads and races normally in

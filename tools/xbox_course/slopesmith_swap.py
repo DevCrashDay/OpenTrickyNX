@@ -92,38 +92,70 @@ def placement(loc, q, scale):
     return m
 
 
+def props_entry(e):
+    """The .xsf object-properties record an export instance asks for (SSX-Library's packing). A triangle
+    proxy needs a collision model, which is not written yet, so it falls back to the bounding box."""
+    flags = (e["Visable"] and 1) | (e["PlayerCollision"] and 32) | (e["PlayerBounce"] and 128) \
+        | (e.get("Unknown241") and 4096) | (e.get("UVScroll") and 8192)
+    mode = 2 if e["CollsionMode"] == 1 else e["CollsionMode"]
+    return (float(e["U0"]), float(e["PlayerBounceAmmount"]), e["U2"], flags, e["SurfaceType"] & 0xFFFFFFFF, mode, -1, -1, e["U8"])
+
+
 def place_props(x, out, name, export, exp_inst, markers):
     """The export's props, written into hidden props of the slot: each distinct mesh into a slot model with
-    room for it, each placement into a slot instance. Nothing grows, so no offset moves. They draw but do not
-    collide (Slopesmith's default for a placed prop); their material is the slot model's own."""
+    room for it, each placement into a slot instance. Nothing grows, so no offset moves. The two StageArea
+    markers keep their slot instances but take the export's mesh and contact. Each instance's .xsf
+    object-properties index points at a record matching the export's flags; a missing record overwrites
+    one only hidden props used. Props wear the slot model's material."""
     mods = json.load(open(os.path.join(export, "Models.json")))["Models"]
-    props = [e for e in exp_inst if not e["InstanceName"].startswith("Mdl_StageArea_")]
-    if not props:
-        return {}
     xsf_path = os.path.join(out, name + ".xsf")
     xsf = bytearray(open(xsf_path, "rb").read())
     op_off, op_n, st_off = u32(xsf, 0x38), u32(xsf, 0x34), u32(xsf, 0x40)
-    ops = [struct.unpack_from("<2f2HI4h", xsf, op_off + 24 * i) for i in range(op_n)]
-    plain = next(i for i, o in enumerate(ops) if o[3] == 1 and o[5] == 0 and o[7] == -1)   # visible, no contact
+    fmt = "<2f2HI4h"
+    ops = [struct.unpack_from(fmt, xsf, op_off + 24 * i) for i in range(op_n)]
     state = lambda i: u32(xsf, st_off + 4 * i)
     ib = u32(x, 0x5C)
+    spare = sorted({state(i) for i in range(u32(x, 0x14))} - {state(i) for i in markers}, reverse=True)
+
+    def entry_for(e):
+        want = props_entry(e)
+        for k, o in enumerate(ops):
+            if o[:5] == want[:5] and o[5:] == want[5:]:
+                return k
+        k = spare.pop(0)
+        ops[k] = want
+        struct.pack_into(fmt, xsf, op_off + 24 * k, *want)
+        return k
+
     marker_models = {u32(x, ib + 144 * i + 0x40) for i in markers}
     M = MD.read_models(x)
     free_models = [i for i in range(len(M)) if i not in marker_models]
+    used_states = set()
     free_inst = [i for i in range(u32(x, 0x14)) if i not in markers and ops[state(i)][7] == -1]
     done, placed = {}, {}
-    for e in props:
+    for e in exp_inst:
         path = os.path.join(export, "Meshes", mods[e["ModelID"]]["ModelObjects"][0]["MeshData"][0]["MeshPath"])
+        verts, tris = MD.flat_mesh(*MD.load_obj(path))
+        if e["InstanceName"].startswith("Mdl_StageArea_"):
+            i = markers[0] if "Start" in e["InstanceName"] else markers[1]
+            mi = u32(x, ib + 144 * i + 0x40)
+            if MD.put_mesh(x, M[mi], verts, tris):
+                m = np.array(struct.unpack_from("<16f", x, ib + 144 * i)).reshape(4, 4)
+                world = np.c_[verts[:, :3], np.ones(len(verts))] @ m
+                struct.pack_into("<6f", x, ib + 144 * i + 0x4C, *world[:, :3].min(0), *world[:, :3].max(0))
+            else:
+                print(f"{e['InstanceName']}: the slot model has no room for the export's mesh; kept")
+            struct.pack_into("<I", xsf, st_off + 4 * i, entry_for(e))
+            continue
         key = open(path, "rb").read()
         if key not in done:
-            verts, tris = MD.flat_mesh(*MD.load_obj(path))
             mi = next((m for m in free_models if MD.put_mesh(x, M[m], verts, tris)), None)
             if mi is None:
                 print(f"no slot model has room for {os.path.basename(path)}; skipped")
                 continue
             free_models.remove(mi)
-            done[key] = (mi, verts)
-        mi, verts = done[key]
+            done[key] = mi
+        mi = done[key]
         i = free_inst.pop(0)
         m = placement(e["Location"], e["Rotation"], e["Scale"])
         b = ib + 144 * i
@@ -131,10 +163,12 @@ def place_props(x, out, name, export, exp_inst, markers):
         world = np.c_[verts[:, :3], np.ones(len(verts))] @ m
         struct.pack_into("<i2i6f", x, b + 0x40, mi, -1, -1, *world[:, :3].min(0), *world[:, :3].max(0))
         struct.pack_into("<I", x, b + 0x70, u32(x, M[mi]["off"] + 0x0C))
-        struct.pack_into("<I", xsf, st_off + 4 * i, plain)
+        k = entry_for(e)
+        used_states.add(k)
+        struct.pack_into("<I", xsf, st_off + 4 * i, k)
         placed[i] = (world[:, :3].min(0), world[:, :3].max(0))
     open(xsf_path, "wb").write(xsf)
-    print(f"{len(placed)} props placed using {len(done)} model(s)")
+    print(f"{len(placed)} props placed using {len(done)} model(s); contact records {sorted(used_states)}")
     return placed
 
 
@@ -239,8 +273,8 @@ def main(src, export, out):
     for e in exp_inst:
         if e["InstanceName"].startswith("Mdl_StageArea_Finish"):
             move_to(x, fi, e["Location"])
-    keep = {i: instance_box(x, i) for i in (si, fi)}
-    keep.update(place_props(x, out, name, export, exp_inst, (si, fi)))
+    keep = place_props(x, out, name, export, exp_inst, (si, fi))
+    keep.update({i: instance_box(x, i) for i in (si, fi)})
 
     tmpl = ltg.read_ltg(open(os.path.join(out, name + ".ltg"), "rb").read())
     g, cell_of = regenerate(tmpl, boxes, keep, lights(x))
