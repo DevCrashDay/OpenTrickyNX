@@ -1,8 +1,10 @@
-<h1 align="center">OpenTrickyNX</h1>
+<h1 align="center"><img width="500" height="500" alt="cover" src="https://github.com/user-attachments/assets/34789fa2-801a-4760-847c-a6e37ff9bf13" /></h1>
+
+<h1 align="center">OpenTricky Switch Edition</h1>
 
 <p align="center">
-  <b>SSX Tricky on the Nintendo Switch, as native homebrew.</b><br>
-  A Switch port of <a href="https://github.com/GiZcesi/OpenTricky">OpenTricky</a>: the original Xbox game, translated to C and built into a <code>.nro</code> from your own disc.
+  <b>The Switch port SSX Tricky never got.</b><br>
+  Built from the original xbox game, with its features restored, and everything a modern switch release would have.
 </p>
 
 <p align="center">
