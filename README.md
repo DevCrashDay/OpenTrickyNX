@@ -5,7 +5,10 @@
 <p align="center">
   <b>The Switch port SSX Tricky never got.</b><br>
   Built from the original xbox game, with its features restored, and everything a modern switch release would have.
+  <img width="800" height="450" alt="2025010805455200-A5A89B79BFFA76FE148972D7618499B2-ezgif com-video-to-webp-converter" src="https://github.com/user-attachments/assets/56fe884b-6ed3-4ec9-a8ec-c6baae86410d" />
+
 </p>
+
 
 <p align="center">
   <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-red">
