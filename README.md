@@ -6,9 +6,12 @@
   <b>The Switch port SSX Tricky never got.</b><br>
   Built from the original xbox game, with its features restored, and everything a modern switch release would have.
   <img width="800" height="450" alt="2025010805455200-A5A89B79BFFA76FE148972D7618499B2-ezgif com-video-to-webp-converter" src="https://github.com/user-attachments/assets/56fe884b-6ed3-4ec9-a8ec-c6baae86410d" />
+</p>
+<p align="center">
+  NEW: Easy to use builder for the .nro file. Go to: https://github.com/DevCrashDay/OpenTrickyNX/blob/main/docs/windows-guide.md
+  <img width="500" height="600" alt="2026-10-22 15_10_44-OpenTrickyNX Builder" src="https://github.com/user-attachments/assets/db132672-f53f-4713-b9ee-890416a0e807" />
 
 </p>
-
 
 <p align="center">
   <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-orange">
