@@ -109,22 +109,20 @@ second controller is set up the game sees one pad.
 
 ## Rendering
 
-The Switch runs the OpenGL renderer through Mesa's Nouveau driver (devkitPro's switch-mesa). SMAA, soft shadows
-and smoother legs start off here.
-
-A Vulkan renderer, through the community's Mesa NVK builds for the Switch as flatout2-sw / fo2x uses, can be built
-instead. It is new and not yet tried on a console, so OpenGL stays the default:
+Two renderers can be built. **Vulkan** (through the community's Mesa NVK builds for the Switch, as flatout2-sw / fo2x
+uses) is the one tested on a console, at about 60 fps in races. **OpenGL** (Mesa's Nouveau driver, devkitPro's
+switch-mesa) is what you get without `VULKAN=1`. SMAA, soft shadows and smoother legs start off on both.
 
 ```bash
-VULKAN=1 NVK_SDK=/path/to/mesa-switch/usr/local ./build_switch.sh "path/to/SSX Tricky (USA).iso"
+VULKAN=1 NVK_SDK=/path/to/portlibs/switch ./build_switch.sh "path/to/SSX Tricky (USA).iso"
 ```
 
-On Windows, in a Command Prompt in the OpenTricky folder:
+On Windows, in PowerShell in the OpenTrickyNX folder:
 
-```bat
-set VULKAN=1
-set NVK_SDK=C:\path\to\mesa-switch\usr\local
-build_switch.bat "C:\path\to\SSX Tricky (USA).iso"
+```powershell
+$env:VULKAN = "1"
+$env:NVK_SDK = "C:\path\to\portlibs\switch"
+.\build_switch.bat "C:\path\to\SSX Tricky (USA).iso"
 ```
 
 The first Vulkan build also compiles glslang for the Switch into `build/glslang-switch/` (or set `GLSLANG_DIR` to

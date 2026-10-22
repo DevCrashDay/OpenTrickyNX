@@ -8,33 +8,30 @@
 </p>
 
 <p align="center">
-  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-red">
+  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-orange">
   <img alt="Platform: Nintendo Switch homebrew" src="https://img.shields.io/badge/platform-Nintendo%20Switch%20(homebrew)-e60012">
-  <img alt="Also: Linux" src="https://img.shields.io/badge/also-Linux%20%C2%B7%20Windows-blue">
-  <img alt="Graphics: OpenGL" src="https://img.shields.io/badge/graphics-OpenGL%203.3%20(Mesa)-blue">
+  <img alt="Graphics: Vulkan or OpenGL" src="https://img.shields.io/badge/graphics-Vulkan%20(NVK)%20%C2%B7%20OpenGL-blue">
+  <img alt="Race: 60 fps" src="https://img.shields.io/badge/races-60%20fps-brightgreen">
   <a href="LICENSE"><img alt="License: GPL-3.0-only" src="https://img.shields.io/badge/license-GPL--3.0--only-green"></a>
 </p>
 
 > [!IMPORTANT]
-> **You need your own game.** No disc image, game code, music or video is distributed:
-> you can build it yourself from a disc image (`.iso` or `.xiso`) of ***SSX Tricky* for the original Xbox, USA release**.
-> get yourself a tool that can extract .xiso files and the USA release of ssx tricky.
-> you will need the default.xbe file and the data folder from the disc.
-
-> [!WARNING]
-> **Experimental.** The Switch build compiles and links, but it has not been played through on Switch hardware yet.
-> Expect crashes and missing effects, and please report what you find.
+> **You need your own game.** No disc image, game code, music, video or ready-made `.nro` is distributed, and none will be.
+> You build the `.nro` yourself from a disc image (`.iso` or `.xiso`) of ***SSX Tricky* for the original Xbox, USA release**.
+> The build contains code translated from your copy of the game, so keep it to yourself.
 
 ---
 
 ## Contents
 
 - [What is this?](#what-is-this)
+- [What works](#what-works)
 - [What you need](#what-you-need)
 - [Build](#build)
 - [Install and play](#install-and-play)
-- [Controls and settings](#controls-and-settings)
-- [Status and known gaps](#status-and-known-gaps)
+- [Controls](#controls)
+- [Settings](#settings)
+- [Known issues](#known-issues)
 - [Other platforms](#other-platforms)
 - [Credits](#credits)
 - [Legal](#legal)
@@ -44,84 +41,123 @@
 ## What is this?
 
 OpenTrickyNX runs *SSX Tricky* (2001) natively on the Switch. It is not an emulator: the game's own Xbox code is translated to C with
-[xboxrecomp](https://github.com/sp00nznet/xboxrecomp) and compiled for the Switch's ARM CPU, and the Xbox's graphics, sound and input chips are
-reimplemented on OpenGL (Mesa), SDL2 audio and SDL2 controllers through devkitPro's libnx.
+[xboxrecomp](https://github.com/sp00nznet/xboxrecomp) and compiled for the Switch's ARM CPU. The Xbox's graphics, sound and input
+hardware is reimplemented on Vulkan (Mesa NVK) or OpenGL, SDL2 audio and SDL2 controllers, through devkitPro's libnx.
 
 It is built on [**OpenTricky**](https://github.com/GiZcesi/OpenTricky), the PC port by GiZcesi, which continues
-[SSX Tricky PC](https://github.com/MatiasRiveraC/SSX-Tricky-PC) by MatiasRiveraC. Everything OpenTricky restores (fog, lens flares, colours, the
-PS2 controls) comes along; what is new here is the Switch side:
+[SSX Tricky PC](https://github.com/MatiasRiveraC/SSX-Tricky-PC) by MatiasRiveraC. Everything OpenTricky restores (fog, lens flares,
+colours and more) comes along.
 
-- **Memory**: the Xbox's 64 MB and the GPU's registers live in one block of Switch memory instead of at fixed Xbox addresses.
-- **Hardware registers**: the audio, sound-chip and video-DAC registers are trapped through the Switch's exception handler.
-- **Renderer**: a new OpenGL 3.3 backend, with the Xbox's colour combiners turned into GLSL shaders.
-- **The disc**: the game reads the disc's files from a `game` folder beside it (extracted with extract-xiso), or straight from an `.iso`.
+## What works
+
+- **Plays on Switch hardware**: boot, menus, sound, saves and races.
+- **60 fps races** with the default build options. The game's x86 registers live in the Switch CPU's own registers, so the translated
+  code runs about three times faster than a straight translation.
+- **Two renderers**: Vulkan through Mesa NVK (the one tested at 60 fps) and OpenGL through Mesa Nouveau.
+- **Two players**: a second controller is player 2.
+- **Frame counter**: an optional in-game fps display.
+- **Home-menu icon**: an optional `.nsp` forwarder, so the game starts from the home menu as a full application.
 
 ## What you need
 
 | | |
 |---|---|
-| **A computer** | Windows, Linux or macOS, with **Docker** (Docker Desktop on Windows and macOS). It provides the Switch compiler (devkitPro's `devkitpro/devkita64` image, about 3 GB, downloaded on the first build). |
+| **A computer** | Windows, Linux or macOS, with **Docker** (Docker Desktop on Windows and macOS, started before the build). It provides the Switch compiler (devkitPro's `devkitpro/devkita64` image, about 3 GB, downloaded on the first build). |
 | **On Windows** | [MSYS2](https://www.msys2.org/), with these packages (run in its **UCRT64** shell):<br>`pacman -S --needed mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-python-capstone mingw-w64-ucrt-x86_64-python-numpy mingw-w64-ucrt-x86_64-python-pillow mingw-w64-ucrt-x86_64-binutils` |
 | **On Linux or macOS** | Python 3 with `capstone`, `numpy` and `pillow` (`python3 -m pip install capstone numpy pillow`), and binutils (`objdump`). |
-| **The game** | A disc image of your own ***SSX Tricky* Xbox disc, USA release** (the PS2, GameCube, PAL and Japanese versions won't work). |
+| **For Vulkan** | The `mesa-switch-nvk-sdk` download from this repository's latest "Mesa NVK SDK" run ([Actions](https://github.com/DevCrashDay/OpenTrickyNX/actions) tab). Unzip it and keep its `portlibs/switch` folder. |
+| **The game** | A disc image of your own ***SSX Tricky* Xbox disc, USA release**. The PS2, GameCube, PAL and Japanese versions won't work. |
 | **The console** | A Switch running custom firmware with the Homebrew Menu. |
 
 ## Build
 
-```
-git clone -b switch-port https://github.com/DevCrashDay/OpenTrickyNX.git
-cd OpenTrickyNX
+Get the source: `git clone https://github.com/DevCrashDay/OpenTrickyNX.git`, or the source `.zip` of the
+[latest release](https://github.com/DevCrashDay/OpenTrickyNX/releases).
+
+**Windows** (PowerShell, in the OpenTrickyNX folder), Vulkan renderer:
+
+```powershell
+$env:VULKAN = "1"
+$env:NVK_SDK = "C:\path\to\portlibs\switch"
+.\build_switch.bat "C:\path\to\SSX Tricky (USA).iso"
 ```
 
-Start Docker, then on **Windows** (or drag the `.iso` onto `build_switch.bat`):
+Leave out the two `$env:` lines for the OpenGL renderer.
 
-```bat
-build_switch.bat "C:\path\to\SSX Tricky (USA).iso"
-```
-
-On **Linux or macOS**:
+**Linux or macOS**:
 
 ```bash
-./build_switch.sh "path/to/SSX Tricky (USA).iso"
+VULKAN=1 NVK_SDK=/path/to/portlibs/switch ./build_switch.sh "path/to/SSX Tricky (USA).iso"
 ```
 
-The script reads `default.xbe` from your disc image, translates it to C, applies the port's fix-up passes, and compiles
-`dist/switch/opentricky/SSX Tricky.nro`. [docs/switch.md](docs/switch.md) has the details.
+The script reads `default.xbe` from your disc image, translates it to C (about 3 minutes), and compiles
+`dist/switch/opentricky/SSX Tricky.nro` (10 to 20 minutes the first time, then only what changed).
+
+| Build option | |
+|---|---|
+| `SWITCH_JOBS=2` | Compiles fewer files at once. Use it when the build stalls because Docker is short of memory. |
+| `SWITCH_OPTS="..."` | CMake options for the build folder, which keeps them, e.g. `-DOT_GUEST_REGS=OFF -DOT_FAST_MEMCHECK=OFF` to turn the speed options off. |
+| `GLSLANG_DIR` | glslang built for the Switch (Vulkan only). Without it the first Vulkan build makes one in `build/glslang-switch`. |
+
+In PowerShell set them as `$env:SWITCH_JOBS = "2"`. [docs/switch.md](docs/switch.md) has the details.
 
 ## Install and play
 
 1. Copy `dist/switch/opentricky/` to `sdmc:/switch/` on the SD card.
-2. Extract your disc image into a folder named `game` inside it, so the disc's `default.xbe` ends up at
-   `sdmc:/switch/opentricky/game/default.xbe`. With extract-xiso: `extract-xiso -x "SSX Tricky (USA).iso" -d game`.
-   (An `.iso` in `sdmc:/switch/opentricky/` works too, when there is no `game` folder.)
+2. Extract your disc into a folder named `game` inside it, so that `sdmc:/switch/opentricky/game/default.xbe` exists
+   (with extract-xiso: `extract-xiso -x "SSX Tricky (USA).iso" -d game`). An `.iso` in `sdmc:/switch/opentricky/` works too, when there is
+   no `game` folder.
 3. Hold **R** while starting any installed game to open the Homebrew Menu **over a game**, then start *SSX Tricky (OpenTricky)*.
    Started from the album, homebrew doesn't get enough memory: the game says so and stops.
 
-Settings live in `sdmc:/switch/opentricky/settings.ini` (optional: create it to change a setting, only the lines you change are needed), saves in `sdmc:/switch/opentricky/Saves/`.
+**Home-menu icon (optional):** `build_switch_nsp.bat "C:\path\to\prod.keys" "C:\path\to\cover.png"` (or `./build_switch_nsp.sh`) makes
+`dist/switch/SSX Tricky.nsp`, which starts the `.nro` as a full application, with no holding R. It is made with your console's own keys,
+so keep it to yourself. See [docs/switch.md](docs/switch.md#a-home-menu-icon-optional).
 
-## Controls and settings
+## Controls
 
 Joy-Cons (attached or held together), a Pro Controller or a single Joy-Con held sideways all work as an Xbox pad:
-**ZL / ZR** are the triggers, **+** is Start and **−** is Back. The game uses OpenTricky's **original PS2 layout**, and every binding and option is in
-`settings.ini`, the same file as on PC, described in OpenTricky's [settings guide](https://opentricky.com/settings).
+**ZL / ZR** are the triggers, **+** is Start and **−** is Back. The bindings are in `settings.ini`, as on Windows.
 
-## Status and known gaps
+**Two players:** hold **−** and press **+** on any controller to open the console's Controllers screen and choose players 1 and 2, then pick a
+two-player race in the game.
+
+## Settings
+
+Everything lives in `sdmc:/switch/opentricky/`:
 
 | | |
 |---|---|
-| **Builds** | The Linux and Switch builds compile and link in CI (with stand-ins for the game code, since that is never in the repository). |
-| **Tested** | The OpenGL renderer passed a draw test on a PC (Mesa's software renderer). **Not yet run on Switch hardware or with the real game.** |
-| **Not done yet** | Post-processing and SMAA, soft shadows, GPU vertex programs (they run on the CPU), point sprites (drawn 1 pixel wide), HD textures. |
-| **Possible hitches** | The first time an effect appears, its shader is compiled, which may cause a short hitch. |
+| `SSX Tricky env.txt` | Read at start, one `KEY=VALUE` per line. The build copies it there with every option listed. |
+| `settings.ini` | Optional: the same file as on PC ([settings guide](https://opentricky.com/settings)). Write only the lines you change. |
+| `Saves/` | Your saved games. |
+| `SSX Tricky.log` | What the game reports, for bug reports. |
 
-Please report what you see in [Issues](https://github.com/DevCrashDay/OpenTrickyNX/issues): what you did, what happened, and the output of
-`nxlink -s "SSX Tricky.nro"` if you can get it (or `SSX Tricky.log`, which the game always writes beside itself).
+Useful lines in `SSX Tricky env.txt`:
+
+| | |
+|---|---|
+| `XBOX_SHOW_FPS=1` | The frame rate in the top-left corner of the picture (`0` hides it). |
+| `OT_CPU_MHZ=1785`, `OT_GPU_MHZ=768`, `OT_MEM_MHZ=1600` | Clocks while the game runs (the defaults). `0` keeps the system's. More heat and battery. |
+| `XBOX_PERF=1` | A timing summary in the log every 2 seconds. |
+| `XBOX_PROFILE=60,20` | From 60 s after start, for 20 s, logs where each thread spends its time. |
+
+## Known issues
+
+- **Experimental**: not yet played through from start to finish. Please report crashes and glitches.
+- **Shader stutter (Vulkan)**: the first time an effect appears its shader is compiled, so the first race of each kind can stutter. The
+  compiled pipelines are kept in `vk_pipeline.cache`, and later races are smooth.
+- **Not on the Switch yet**: post-processing, SMAA and soft shadows.
+- **Two players**: needs more testing. Four-player split screen is not available.
+
+Please report what you see in [Issues](https://github.com/DevCrashDay/OpenTrickyNX/issues): what you did, what happened, and
+`SSX Tricky.log`.
 
 ## Other platforms
 
 - **Windows**: the original Direct3D 11 build is unchanged. `build.bat "C:\path\to\SSX Tricky (USA).iso"`, see [docs/building.md](docs/building.md),
   or get the ready-made PC releases from [OpenTricky](https://github.com/GiZcesi/OpenTricky/releases).
-- **Linux (native)**: the same sources build with SDL2 and OpenGL, see [docs/switch.md](docs/switch.md#building-on-linux).
+- **Linux (native)**: the same sources build with SDL2 and OpenGL or Vulkan, see [docs/switch.md](docs/switch.md#building-on-linux).
 
 ## Credits
 
