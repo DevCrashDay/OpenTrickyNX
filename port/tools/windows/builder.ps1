@@ -21,7 +21,12 @@ $Downloads = Join-Path $Work "downloads"
 $MsysRoot = if ($env:MSYS2_ROOT) { $env:MSYS2_ROOT } else { "C:\msys64" }
 $Bash = Join-Path $MsysRoot "usr\bin\bash.exe"
 $Python = Join-Path $MsysRoot "ucrt64\bin\python.exe"
+# The Vulkan files: the builder's own download, or one already unpacked by hand
+# (NVK_SDK, or a portlibs\switch folder in the top folder).
 $NvkDir = Join-Path $Work "nvk-sdk\portlibs\switch"
+foreach ($d in @($env:NVK_SDK, (Join-Path $Root "portlibs\switch"))) {
+    if ($d -and (Test-Path (Join-Path $d "lib\libvulkan.a"))) { $NvkDir = $d; break }
+}
 $DockerBin = Join-Path $env:ProgramFiles "Docker\Docker\resources\bin"
 $DockerDesktop = Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"
 $Settings = Join-Path $Work "settings.json"
@@ -67,13 +72,20 @@ function Run-Bash([string]$script) {
     return (Run $Bash @("-l", $file.Replace("\", "/")))
 }
 
-function Download([string]$url, [string]$file) {
+# Returns $false when the file isn't there (404); other failures stop the task.
+function Download([string]$url, [string]$file, [switch]$Optional) {
     Say "   downloading $url"
     $ProgressPreference = "SilentlyContinue"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     try { Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile "$file.part" }
-    catch { Fail "the download failed ($($_.Exception.Message)). Check the internet connection and try again." }
+    catch {
+        $code = 0
+        if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+        if ($Optional -and $code -eq 404) { return $false }
+        Fail "the download failed ($($_.Exception.Message)). Check the internet connection and try again."
+    }
     Move-Item -Force "$file.part" $file
+    return $true
 }
 
 function Test-DockerRunning {
@@ -97,7 +109,7 @@ function Task-Setup {
     Say "== [1/4] MSYS2 (Python and tools for translating the game)"
     if (-not (Test-Path $Bash)) {
         $sfx = Join-Path $Downloads "msys2-base.sfx.exe"
-        Download $MsysUrl $sfx
+        Download $MsysUrl $sfx | Out-Null
         $parent = Split-Path $MsysRoot -Parent
         if ((Split-Path $MsysRoot -Leaf) -ne "msys64") { Fail "MSYS2_ROOT has to end in \msys64 for the automatic install." }
         Say "   unpacking to $MsysRoot"
@@ -126,7 +138,7 @@ function Task-Setup {
             Start-Process wsl.exe -ArgumentList "--install --no-distribution" -Verb RunAs -Wait | Out-Null
         }
         $installer = Join-Path $Downloads "Docker Desktop Installer.exe"
-        Download $DockerUrl $installer
+        Download $DockerUrl $installer | Out-Null
         Say "   installing Docker Desktop (Windows asks for permission)"
         $p = Start-Process $installer -ArgumentList "install --quiet --accept-license --backend=wsl-2" -Verb RunAs -Wait -PassThru
         if ($p.ExitCode -ne 0) { Fail "the Docker Desktop installer stopped with code $($p.ExitCode)." }
@@ -141,16 +153,19 @@ function Task-Setup {
     Say "== [3/4] Vulkan driver files (Mesa NVK)"
     if (-not (Test-Nvk)) {
         $zip = Join-Path $Downloads "mesa-switch-nvk-sdk.zip"
-        Download $NvkUrl $zip
-        $dir = Join-Path $Work "nvk-sdk"
-        if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
-        Expand-Archive -Path $zip -DestinationPath $dir
-        if (-not (Test-Nvk)) { Fail "the download has no portlibs\switch\lib\libvulkan.a in it." }
+        if (Download $NvkUrl $zip -Optional) {
+            $dir = Join-Path $Work "nvk-sdk"
+            if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+            Expand-Archive -Path $zip -DestinationPath $dir
+            if (-not (Test-Nvk)) { Fail "the download has no portlibs\switch\lib\libvulkan.a in it." }
+        }
     }
-    Say "   the Vulkan files are in $NvkDir"
+    if (Test-Nvk) { Say "   the Vulkan files are in $NvkDir" }
+    else { Say "   not published yet: build with OpenGL for now, or unpack the mesa-switch-nvk-sdk download so OpenTrickyNX\portlibs\switch\lib\libvulkan.a exists" }
 
     Say "== [4/4] done"
-    Say "OK: everything is installed."
+    if (Test-Nvk) { Say "OK: everything is installed." }
+    else { Say "OK: everything is installed except the Vulkan files: choose OpenGL in step 2 for now." }
 }
 
 function Task-Build {
