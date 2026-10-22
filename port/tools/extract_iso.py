@@ -4,17 +4,20 @@
 disc image, into game_files/ (ignored by git).
 
     extract_iso.py "path/to/SSX Tricky.iso" game_files
+    extract_iso.py --all "path/to/SSX Tricky.iso" "E:/switch/opentricky/game"
 
 The build needs:
     default.xbe                    the game's executable, translated to C
     data/textures/hudgame.xsh      the application icon (optional)
     data/textures/loading.xsh      the application icon (optional)
 
+--all copies the whole disc instead (the game folder on the Switch's SD card).
+
 Reads XDVDFS (the Xbox disc file system) directly: an extract-xiso image or a
 full disc dump (the game partition is then found at its usual offset). No
 other tool needed.
 """
-import os, struct, sys
+import os, shutil, struct, sys
 
 SECTOR = 2048
 MAGIC = b"MICROSOFT*XBOX*MEDIA"
@@ -32,7 +35,7 @@ def find_partition(f):
     return None
 
 
-def read_dir(f, base, sector, size):
+def read_dir(f, base, sector, size, keep_case=False):
     """Directory table -> {lower-case name: (sector, size, is_dir)}."""
     if size == 0:
         return {}
@@ -48,7 +51,7 @@ def read_dir(f, base, sector, size):
         if left == 0xFFFF and right == 0xFFFF:
             continue                                  # padding
         name = table[off + 14:off + 14 + nlen].decode("ascii", "replace")
-        out[name.lower()] = (start, length, bool(attr & 0x10))
+        out[name if keep_case else name.lower()] = (start, length, bool(attr & 0x10))
         if left:
             todo.append(left * 4)
         if right:
@@ -68,16 +71,64 @@ def lookup(f, base, root, path):
     return entry
 
 
+def copy_file(f, iso, base, sector, size, dst):
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    f.seek(base + sector * SECTOR)
+    left = size
+    with open(dst, "wb") as g:
+        while left:
+            chunk = f.read(min(left, 1 << 20))
+            if not chunk:
+                sys.exit("%s: truncated image" % iso)
+            g.write(chunk)
+            left -= len(chunk)
+
+
+def extract_all(f, iso, base, root, out):
+    """Every file on the disc into out/, printing progress by the megabyte."""
+    files = []
+    todo = [((), root)]
+    while todo:
+        parts, (sector, size) = todo.pop()
+        for name, (start, length, is_dir) in sorted(read_dir(f, base, sector, size, True).items()):
+            if is_dir:
+                todo.append((parts + (name,), (start, length)))
+            else:
+                files.append((parts + (name,), start, length))
+    if not any(len(p) == 1 and p[0].lower() == "default.xbe" for p, _, _ in files):
+        sys.exit("%s: default.xbe not found -- is this SSX Tricky (USA) for Xbox?" % iso)
+    total = sum(n for _, _, n in files) or 1
+    os.makedirs(out, exist_ok=True)
+    free = shutil.disk_usage(out).free
+    if free < total + (16 << 20):
+        sys.exit("%s: needs %d MB free, there are %d MB" % (out, (total >> 20) + 16, free >> 20))
+    done, shown = 0, -1
+    for parts, start, length in files:
+        copy_file(f, iso, base, start, length, os.path.join(out, *parts))
+        done += length
+        if done * 100 // total != shown:
+            shown = done * 100 // total
+            print("   %3d%%  %s" % (shown, "/".join(parts)), flush=True)
+    print("   %d files, %d MB" % (len(files), total >> 20))
+
+
 def main():
-    if len(sys.argv) != 3:
+    args = sys.argv[1:]
+    whole = bool(args) and args[0] == "--all"
+    if whole:
+        args = args[1:]
+    if len(args) != 2:
         sys.exit(__doc__)
-    iso, out = sys.argv[1], sys.argv[2]
+    iso, out = args
     with open(iso, "rb") as f:
         base = find_partition(f)
         if base is None:
             sys.exit("%s: not an Xbox disc image (no XDVDFS header found)" % iso)
         f.seek(base + 32 * SECTOR + len(MAGIC))
         root = struct.unpack("<II", f.read(8))
+        if whole:
+            extract_all(f, iso, base, root, out)
+            return
         for path in WANTED:
             e = lookup(f, base, root, path)
             if e is None or e[2]:
@@ -85,17 +136,7 @@ def main():
                     sys.exit("%s: %s not found -- is this SSX Tricky (USA) for Xbox?" % (iso, path))
                 print("   (not found, skipped: %s)" % path)
                 continue
-            dst = os.path.join(out, *path.split("/"))
-            os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
-            f.seek(base + e[0] * SECTOR)
-            left = e[1]
-            with open(dst, "wb") as g:
-                while left:
-                    chunk = f.read(min(left, 1 << 20))
-                    if not chunk:
-                        sys.exit("%s: truncated image" % iso)
-                    g.write(chunk)
-                    left -= len(chunk)
+            copy_file(f, iso, base, e[0], e[1], os.path.join(out, *path.split("/")))
             print("   %s (%d bytes)" % (path, e[1]))
 
 
