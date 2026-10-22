@@ -8,36 +8,32 @@
 </p>
 
 <p align="center">
-  <a href="https://opentricky.com"><img alt="Website: opentricky.com" src="https://img.shields.io/badge/website-opentricky.com-0b5cd5"></a>
-  <a href="https://github.com/GiZcesi/OpenTricky/releases"><img alt="Release" src="https://img.shields.io/github/v/release/GiZcesi/OpenTricky?include_prereleases&label=release&color=orange"></a>
-  <img alt="Status: unstable" src="https://img.shields.io/badge/status-unstable-orange">
-  <img alt="Platform: Windows 10/11 x64, Linux / Steam Deck (Proton)" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64%20%C2%B7%20Linux%20%2F%20Steam%20Deck%20(Proton)-blue">
-  <img alt="Graphics: Direct3D 11" src="https://img.shields.io/badge/graphics-Direct3D%2011-blue">
+  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-red">
+  <img alt="Platform: Nintendo Switch homebrew" src="https://img.shields.io/badge/platform-Nintendo%20Switch%20(homebrew)-e60012">
+  <img alt="Also: Linux" src="https://img.shields.io/badge/also-Linux%20%C2%B7%20Windows-blue">
+  <img alt="Graphics: OpenGL" src="https://img.shields.io/badge/graphics-OpenGL%203.3%20(Mesa)-blue">
   <a href="LICENSE"><img alt="License: GPL-3.0-only" src="https://img.shields.io/badge/license-GPL--3.0--only-green"></a>
-  <a href="https://discord.gg/r38sThsqnj"><img alt="Discord" src="https://img.shields.io/badge/Discord-join%20the%20server-5865F2?logo=discord&logoColor=white"></a>
-  <a href="https://ko-fi.com/giz_music/"><img alt="Ko-fi" src="https://img.shields.io/badge/Ko--fi-buy%20me%20a%20coffee-FF5E5B?logo=ko-fi&logoColor=white"></a>
 </p>
 
-<p align="center"><b>Join the <a href="https://discord.gg/r38sThsqnj">OpenTricky Discord</a></b> for help, screenshots and news about the next builds.</p>
-
 > [!IMPORTANT]
-> **You need your own game.** No disc image, game code, music or video is distributed: you need a disc image (`.iso` or `.xiso`) of ***SSX Tricky* for the original Xbox, USA release**.
+> **You need your own game.** No disc image, game code, music or video is distributed, and no ready-made `.nro` ever will be:
+> you build it yourself from a disc image (`.iso` or `.xiso`) of ***SSX Tricky* for the original Xbox, USA release**.
 
 > [!WARNING]
-> **This is an unstable release.** You can play it from start to finish, but some parts are still rough. Please read [Known issues](#known-issues) before reporting a bug.
+> **Experimental.** The Switch build compiles and links, but it has not been played through on Switch hardware yet.
+> Expect crashes and missing effects, and please report what you find.
 
 ---
 
 ## Contents
 
 - [What is this?](#what-is-this)
-- [What's new in 0.1.3](#whats-new-in-013)
+- [What you need](#what-you-need)
+- [Build](#build)
 - [Install and play](#install-and-play)
 - [Controls and settings](#controls-and-settings)
-- [Known issues](#known-issues)
-- [FAQ](#faq)
-- [Building from source](#building-from-source)
-- [Reporting a bug](#reporting-a-bug)
+- [Status and known gaps](#status-and-known-gaps)
+- [Other platforms](#other-platforms)
 - [Credits](#credits)
 - [Legal](#legal)
 
@@ -45,130 +41,113 @@
 
 ## What is this?
 
-OpenTricky runs *SSX Tricky* (2001) natively on Windows. It is not an emulator: the game's own Xbox code is translated to C with
-[xboxrecomp](https://github.com/sp00nznet/xboxrecomp) and compiled into an ordinary Windows program, and the Xbox's graphics, sound and input chips
-are reimplemented on Direct3D 11, XAudio2 and XInput. OpenTricky continues [**SSX Tricky PC**](https://github.com/MatiasRiveraC/SSX-Tricky-PC) by MatiasRiveraC.
+OpenTrickyNX runs *SSX Tricky* (2001) natively on the Switch. It is not an emulator: the game's own Xbox code is translated to C with
+[xboxrecomp](https://github.com/sp00nznet/xboxrecomp) and compiled for the Switch's ARM CPU, and the Xbox's graphics, sound and input chips are
+reimplemented on OpenGL (Mesa), SDL2 audio and SDL2 controllers through devkitPro's libnx.
 
-The goals:
+It is built on [**OpenTricky**](https://github.com/GiZcesi/OpenTricky), the PC port by GiZcesi, which continues
+[SSX Tricky PC](https://github.com/MatiasRiveraC/SSX-Tricky-PC) by MatiasRiveraC. Everything OpenTricky restores (fog, lens flares, colours, the
+PS2 controls) comes along; what is new here is the Switch side:
 
-1. **Feature complete.** Built from the original game, with all its features restored: fog, lens flares, colours, 5.1 sound.
-2. **A modern PC release**: modern controllers and button styles (Xbox, PlayStation, PS2 original), the original PS2 controls with all 15 grabs, full keyboard and controller remapping, any resolution, ultrawide, high frame rates, all set up in one launcher.
-3. **New options on top**: smoother edges, soft shadows, longer draw distance, optional HD textures. The *Original Xbox* preset turns them all off at once.
+- **Memory**: the Xbox's 64 MB and the GPU's registers live in one block of Switch memory instead of at fixed Xbox addresses.
+- **Hardware registers**: the audio, sound-chip and video-DAC registers are trapped through the Switch's exception handler.
+- **Renderer**: a new OpenGL 3.3 backend, with the Xbox's colour combiners turned into GLSL shaders.
+- **The disc**: the game reads the disc's files from a `game` folder beside it (extracted with extract-xiso), or straight from an `.iso`.
 
-## What's new in 0.1.3
+## What you need
 
-- **Linux and Steam Deck**: the very low frame rate under Wine and Proton is fixed. The game now runs smoothly there.
-- **Music, as in the original game**: it fades down and back up over one second (under the announcer's voice, on the results screen, in the menus) instead of jumping at once.
-- **Signed updates**: the launcher checks the signature of the downloaded zip and refuses one that is unsigned or modified.
-- **Steam Deck preset**: applied by itself at the first start on a Steam Deck.
+| | |
+|---|---|
+| **A computer** | Windows, Linux or macOS, with **Docker** (Docker Desktop on Windows and macOS). It provides the Switch compiler (devkitPro's `devkitpro/devkita64` image, about 3 GB, downloaded on the first build). |
+| **On Windows** | [MSYS2](https://www.msys2.org/), with these packages (run in its **UCRT64** shell):<br>`pacman -S --needed mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-python-capstone mingw-w64-ucrt-x86_64-python-numpy mingw-w64-ucrt-x86_64-python-pillow mingw-w64-ucrt-x86_64-binutils` |
+| **On Linux or macOS** | Python 3 with `capstone`, `numpy` and `pillow` (`python3 -m pip install capstone numpy pillow`), and binutils (`objdump`). |
+| **The game** | A disc image of your own ***SSX Tricky* Xbox disc, USA release** (the PS2, GameCube, PAL and Japanese versions won't work). |
+| **The console** | A Switch running custom firmware with the Homebrew Menu. |
 
-Everything else: the [release notes](https://github.com/GiZcesi/OpenTricky/releases) and [CHANGELOG.md](CHANGELOG.md).
+## Build
+
+```
+git clone -b switch-port https://github.com/DevCrashDay/OpenTrickyNX.git
+cd OpenTrickyNX
+```
+
+Start Docker, then on **Windows** (or drag the `.iso` onto `build_switch.bat`):
+
+```bat
+build_switch.bat "C:\path\to\SSX Tricky (USA).iso"
+```
+
+On **Linux or macOS**:
+
+```bash
+./build_switch.sh "path/to/SSX Tricky (USA).iso"
+```
+
+The script reads `default.xbe` from your disc image, translates it to C, applies the port's fix-up passes, and compiles
+`dist/switch/opentricky/SSX Tricky.nro`. [docs/switch.md](docs/switch.md) has the details.
+
+> [!CAUTION]
+> Your build contains code translated from your copy of the game. Please don't share it.
 
 ## Install and play
 
-**You need** Windows 10 or 11 (64-bit), a Direct3D 11 graphics card, and a disc image (`.iso` or `.xiso`) of your own ***SSX Tricky* Xbox disc, USA release**
-(the PS2, GameCube, PAL and Japanese versions won't work). A controller is optional: Xbox-style (XInput) controllers and the keyboard work.
+1. Copy `dist/switch/opentricky/` to `sdmc:/switch/` on the SD card.
+2. Extract your disc image into a folder named `game` inside it, so the disc's `default.xbe` ends up at
+   `sdmc:/switch/opentricky/game/default.xbe`. With extract-xiso: `extract-xiso -x "SSX Tricky (USA).iso" -d game`.
+   (An `.iso` in `sdmc:/switch/opentricky/` works too, when there is no `game` folder.)
+3. Hold **R** while starting any installed game to open the Homebrew Menu **over a game**, then start *SSX Tricky (OpenTricky)*.
+   Started from the album, homebrew doesn't get enough memory: the game says so and stops.
 
-1. Download `OpenTricky-<version>-unstable-win64.zip` from [**Releases**](https://github.com/GiZcesi/OpenTricky/releases) and extract it into a new, empty folder.
-2. Start **`OpenTricky.exe`**, the launcher, and choose your disc image: the launcher checks it and remembers it.
-3. Pick a preset or your own settings, then press **PLAY**.
-
-The game itself is `bin\SSX Tricky.exe`: it also starts the game straight away, with the same settings.
-
-**Coming from 0.1.2:** let the launcher update you (it checks GitHub once a day: if no update shows up yet, close it, delete `update-cache.txt` next to `settings.ini`, and open it again). **Coming from 0.1.1:** install 0.1.3 fresh, in a new folder (the 0.1.1 launcher can't install it). Saves in `Documents\My Games\SSX Tricky\Saves` stay where they are; if your saves were inside the old folder (with `portable.txt`), copy its `Saves` folder and `portable.txt` into the new one. Don't copy `settings.ini`, choose your disc image again, make your shortcuts again (the game is now `bin\SSX Tricky.exe`), then delete the old folder.
-
-> [!NOTE]
-> Windows SmartScreen may warn you because the program isn't code-signed. If you trust the download, choose **More info → Run anyway**.
-
-The launcher also installs the next versions for you, only if you say so. More in the [install guide](https://opentricky.com/install).
+Settings live in `sdmc:/switch/opentricky/settings.ini` (optional: create it to change a setting, only the lines you change are needed), saves in `sdmc:/switch/opentricky/Saves/`.
 
 ## Controls and settings
 
-The game uses the **original PS2 layout**. Everything can be remapped in the launcher's **Controls** tab.
+Joy-Cons (attached or held together), a Pro Controller or a single Joy-Con held sideways all work as an Xbox pad:
+**ZL / ZR** are the triggers, **+** is Start and **−** is Back. The game uses OpenTricky's **original PS2 layout**, and every binding and option is in
+`settings.ini`, the same file as on PC, described in OpenTricky's [settings guide](https://opentricky.com/settings).
 
-| PS2 button | Controller | Keyboard |
-|---|---|---|
-| Cross / Circle / Square / Triangle | A / B / X / Y | `Space` / `Esc` / `C` / `V` |
-| L1 / R1 | LB / RB | `F` / `R` |
-| L2 / R2 | LT / RT | `Q` / `E` |
-| Start / Select | Start / Back | `Enter` / `Tab` |
-| L3 (press the left stick) | Left stick press | `X` |
-| Left stick and D-pad | Left stick and D-pad | Arrow keys |
+## Status and known gaps
 
-In the game window: `Alt+Enter` or `F11` switches window / fullscreen, `F12` takes a screenshot, `Alt+F4` quits.
-
-All settings are in the launcher, in six tabs (*Display*, *Graphics*, *Audio*, *Controls*, *Game*, *Advanced*). Three presets set the main ones at once:
-**Recommended** (the default), *Original Xbox* (every PC extra off) and *Steam Deck* (1280×800, 60 FPS).
-Every setting, with its choices and default, is explained in the [**Settings guide**](https://opentricky.com/settings) and the [controls page](https://opentricky.com/controls).
-
-## Known issues
-
-The main ones, most serious first. The full list is on [opentricky.com/known-issues](https://opentricky.com/known-issues).
-
-| Problem | What to do for now |
+| | |
 |---|---|
-| **Above 60 FPS, the controls answer one game step later** (about 17 ms). | Set *Frame rate limit* to *60* for the original game's exact timing. |
-| **Only Xbox-style (XInput) controllers are supported natively.** | Use Steam Input or DS4Windows, and choose *PlayStation modern* or *PS2 original* in *Button style*. |
-| **Linux / Steam Deck (Proton):** 0.1.3 fixes the very low frame rate under Wine/Proton. The game now runs smoothly on Linux. With Proton Experimental, performance may still be lower: if so, try Proton 10 or PortProton, and report it with your logs. | Through Steam, pick *Proton 10* in *Properties > Compatibility*. Or, in Desktop Mode, run `OpenTricky.exe` with **PortProton** (Flatpak): WINE *PROTON_LG_10-28*, 3D API *DXVK (Newest)*, then the *Steam Deck* preset in the launcher. |
-| **5.1 surround isn't tested on real 5.1 speakers.** | Tell us how it sounds. |
+| **Builds** | The Linux and Switch builds compile and link in CI (with stand-ins for the game code, since that is never in the repository). |
+| **Tested** | The OpenGL renderer passed a draw test on a PC (Mesa's software renderer). **Not yet run on Switch hardware or with the real game.** |
+| **Not done yet** | Post-processing and SMAA, soft shadows, GPU vertex programs (they run on the CPU), point sprites (drawn 1 pixel wide), HD textures. |
+| **Possible hitches** | The first time an effect appears, its shader is compiled, which may cause a short hitch. |
 
-## FAQ
+Please report what you see in [Issues](https://github.com/DevCrashDay/OpenTrickyNX/issues): what you did, what happened, and the output of
+`nxlink -s "SSX Tricky.nro"` if you can get it (or `SSX Tricky.log`, which the game always writes beside itself).
 
-Disc images, saves, updates, frame rates, controllers, Linux and the Steam Deck, help when something goes wrong:
-every answer is on [**opentricky.com/faq**](https://opentricky.com/faq).
+## Other platforms
 
-## Building from source
-
-The game code is translated **on your own PC, from your own disc image**. It is never in this repository.
-
-1. Install [MSYS2](https://www.msys2.org/), then run this in its **UCRT64** shell:
-   ```bash
-   pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake make \
-     mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-python-capstone \
-     mingw-w64-ucrt-x86_64-python-numpy mingw-w64-ucrt-x86_64-python-pillow
-   ```
-2. Build from a Windows command prompt:
-   ```bat
-   build.bat "C:\path\to\SSX Tricky (USA).iso"
-   ```
-   Or from the UCRT64 shell: `./build.sh "/c/path/to/SSX Tricky (USA).iso"`.
-3. When the build is done, start `dist/OpenTricky/OpenTricky.exe` (the launcher) and choose the same disc image.
-
-The script reads `default.xbe` from your disc image, translates it to C, applies the port's fix-up passes, then compiles the game and the launcher into `dist/OpenTricky/`.
-No other tool is needed. [docs/building.md](docs/building.md) has the details.
-
-> [!CAUTION]
-> Your build contains code translated from your copy of the game. Please don't share it: point people to the releases here instead.
-
-## Reporting a bug
-
-Open an [issue](https://github.com/GiZcesi/OpenTricky/issues/new/choose), or post in #bug-reports on the [Discord](https://discord.gg/r38sThsqnj), with the version
-(*Settings → Advanced → About OpenTricky*), your settings, your PC, and `SSX Tricky.log` (next to `settings.ini`) or the zip made by *Prepare a bug report* in the launcher.
-Nothing is ever sent by itself. More in [Help & bug reports](https://opentricky.com/faq#help).
+- **Windows**: the original Direct3D 11 build is unchanged. `build.bat "C:\path\to\SSX Tricky (USA).iso"`, see [docs/building.md](docs/building.md),
+  or get the ready-made PC releases from [OpenTricky](https://github.com/GiZcesi/OpenTricky/releases).
+- **Linux (native)**: the same sources build with SDL2 and OpenGL, see [docs/switch.md](docs/switch.md#building-on-linux).
 
 ## Credits
 
 | Who | What |
 |---|---|
+| [**GiZcesi**](https://github.com/GiZcesi) | [OpenTricky](https://github.com/GiZcesi/OpenTricky), the PC port this Switch version is built on ([Discord](https://discord.gg/r38sThsqnj), [Ko-fi](https://ko-fi.com/giz_music/)). |
 | [**MatiasRiveraC**](https://github.com/MatiasRiveraC) | Creator of [SSX Tricky PC](https://github.com/MatiasRiveraC/SSX-Tricky-PC), the port OpenTricky continues: the recompilation, runtime, renderer, launcher and the reverse-engineering work. |
 | [**sp00nznet**](https://github.com/sp00nznet) | [xboxrecomp](https://github.com/sp00nznet/xboxrecomp), the static recompiler and Xbox runtime everything is built on (MIT). |
 | [**xemu**](https://xemu.app) | The GPU and audio emulation that parts of the renderer and the audio are adapted from (LGPL-2.1-or-later), and the accuracy reference. |
+| [**devkitPro**](https://devkitpro.org/) | devkitA64, libnx and the Switch ports of SDL2 and Mesa. |
 | **Jorge Jimenez et al.** | [SMAA](https://www.iryoku.com/smaa/) (MIT). |
-| **Bl4ckH4nd** | HD textures (not included). |
-| [RmlUi](https://github.com/mikke89/RmlUi), [SDL](https://www.libsdl.org/), [FreeType](https://freetype.org/) | The launcher's interface, window and input, and text (MIT, zlib, FreeType License). |
+| [RmlUi](https://github.com/mikke89/RmlUi), [SDL](https://www.libsdl.org/), [FreeType](https://freetype.org/) | The PC launcher's interface, window and input, and text (MIT, zlib, FreeType License). |
 | [Capstone](https://www.capstone-engine.org/), [Ghidra](https://ghidra-sre.org/) | Disassembly and reverse engineering. |
-| **GiZcesi** | OpenTricky: direction, testing and playing. |
+| **DevCrashDay** | OpenTrickyNX: the Switch port. |
 
 See [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
 ## Legal
 
-- OpenTricky is an unofficial fan project. It is not affiliated with or endorsed by Electronic Arts, EA Canada or Microsoft.
-  *SSX* and *SSX Tricky* are trademarks of Electronic Arts, and Xbox is a trademark of Microsoft.
+- OpenTrickyNX is an unofficial fan project. It is not affiliated with or endorsed by Electronic Arts, EA Canada, Microsoft or Nintendo.
+  *SSX* and *SSX Tricky* are trademarks of Electronic Arts, Xbox is a trademark of Microsoft, and Nintendo Switch is a trademark of Nintendo.
 - **No disc image, game code, music or video is distributed.** You need your own copy of the game.
-- Licences: OpenTricky's code is under the **GNU General Public License v3.0 only** (`GPL-3.0-only`, see [LICENSE](LICENSE)), unless a file says otherwise.
+- Licences: the code is under the **GNU General Public License v3.0 only** (`GPL-3.0-only`, see [LICENSE](LICENSE)), unless a file says otherwise.
   `xboxrecomp/` keeps its MIT licence (`xboxrecomp/LICENSE`). Files adapted from xemu stay under LGPL-2.1-or-later, as their headers say. SMAA is MIT.
-  The launcher uses RmlUi (MIT), SDL 3 (zlib), FreeType (FreeType License) and fonts under the SIL Open Font License;
-  their licences are in `port/third_party/` and `port/launcher/app/ui/fonts/`, and in `THIRD-PARTY-LICENSES.txt` in the release.
+  The PC launcher uses RmlUi (MIT), SDL 3 (zlib), FreeType (FreeType License) and fonts under the SIL Open Font License;
+  their licences are in `port/third_party/` and `port/launcher/app/ui/fonts/`.
   Portions of this software are copyright © 2026 The FreeType Project (https://freetype.org). All rights reserved.
 - Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.

@@ -156,6 +156,10 @@ BOOL launcher_install_root_w(WCHAR *out, size_t n)
 
 static BOOL is_absolute(const char *p)
 {
+#ifndef _WIN32
+    const char *colon = strchr(p, ':');
+    if (p[0] == '/' || (colon && colon[1] == '/')) return TRUE;    /* "/home/..", "sdmc:/.." */
+#endif
     return (p[0] && p[1] == ':') || (p[0] == '\\' && p[1] == '\\');
 }
 
@@ -442,7 +446,7 @@ void launcher_fork_apply(const LauncherConfig *cfg, const char *source)
     {   /* the shader disk cache, beside settings.ini (the path is not reported) */
         char dir[MAX_PATH], *slash;
         launcher_config_path(dir, sizeof dir);
-        slash = strrchr(dir, '\\');
+        slash = path_last_sep(dir);
         if (slash) slash[1] = '\0';
         else dir[0] = '\0';
         if (!getenv("XBOX_SHADER_CACHE_DIR") && strlen(dir) + 14 < sizeof dir) {
@@ -531,12 +535,12 @@ void launcher_log_path(char *out, size_t out_sz)
     char ini[MAX_PATH], exe[MAX_PATH], *slash, *name, *dot;
     DWORD k;
     launcher_config_path(ini, sizeof ini);
-    slash = strrchr(ini, '\\');
+    slash = path_last_sep(ini);
     if (slash) slash[1] = '\0';
     else ini[0] = '\0';
     k = GetModuleFileNameA(NULL, exe, (DWORD)sizeof exe);
     if (k == 0 || k >= sizeof exe) snprintf(exe, sizeof exe, "SSX Tricky.exe");
-    name = strrchr(exe, '\\');
+    name = path_last_sep(exe);
     name = name ? name + 1 : exe;
     dot = strrchr(name, '.');
     if (dot) *dot = '\0';
@@ -645,7 +649,11 @@ void launcher_hdd_path(const LauncherConfig *cfg, char *out, size_t out_sz)
     } else {
         wcscpy(p, kind == LAUNCHER_SAVES_OLD_HDD ? L"hdd" : L"Saves");
     }
-    if ((p[0] && p[1] == L':') || (p[0] == L'\\' && p[1] == L'\\')) {
+    if ((p[0] && p[1] == L':') || (p[0] == L'\\' && p[1] == L'\\')
+#ifndef _WIN32
+        || p[0] == L'/' || wcschr(p, L':')          /* "/home/...", "sdmc:/..." */
+#endif
+        ) {
         wcscpy(joined, p);
     } else {
         WCHAR base[MAX_PATH];

@@ -142,6 +142,7 @@ PASSES=(
   "fork_speechhold|$PY \"$FORK/fix_speechhold.py\" \"$GEN\""
   "fork_crowdemit|$PY \"$FORK/fix_crowdemit.py\" \"$GEN\""
   "fork_fadeparity|$PY \"$FORK/fix_fadeparity.py\" \"$GEN\""
+  "fork_stack_access|$PY \"$FORK/fix_stack_access.py\" \"$GEN\""
 )
 i=0
 for p in "${PASSES[@]}"; do

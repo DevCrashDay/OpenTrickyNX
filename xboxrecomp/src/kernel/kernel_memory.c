@@ -11,6 +11,7 @@
 
 #include "kernel.h"
 #include "xbox_memory_layout.h"
+#include "xbox_compact_layout.h"
 #include <malloc.h>
 #include <stdio.h>
 
@@ -209,7 +210,11 @@ PVOID __stdcall xbox_MmClaimGpuInstanceMemory(ULONG NumberOfBytes, PULONG Number
      * block sits outside it, so the 32-bit guest address the bridge derived
      * from it pointed somewhere unrelated (a different RAM mirror on every
      * run, or the aperture). */
+#if XBOX_COMPACT_LAYOUT
+    PVOID p = xbox_host_ptr(XBOX_GPU_INSTANCE_END_VA);
+#else
     PVOID p = (PVOID)((uintptr_t)XBOX_GPU_INSTANCE_END_VA + xbox_GetMemoryOffset());
+#endif
     if (NumberOfPaddingBytes)
         *NumberOfPaddingBytes = 0;
     if (NumberOfBytes > XBOX_GPU_INSTANCE_SIZE)

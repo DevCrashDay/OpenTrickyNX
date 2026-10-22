@@ -21,6 +21,7 @@
  * the Windows tools cannot name its functions, and the guest code is one flat
  * sea of generated functions with no frame pointers to walk.
  */
+#if defined(_WIN32)
 #include <windows.h>
 #include <tlhelp32.h>
 #include <psapi.h>
@@ -273,7 +274,10 @@ static DWORD WINAPI prof_main(LPVOID arg)
             double cpu;
             t->cpu1 = thread_cpu(t->h);
             cpu = (double)(t->cpu1 - t->cpu0) / 1e7 / wall * 100.0;
-            if (!t->samples) continue;
+            if (!t->samples) {
+            fprintf(stderr, "[PROFILE] thread %d (core %d): no samples (%u empty, %u refused)\n", i, t->core, t->zero, t->lost);
+            continue;
+        }
             if (cpu < 2.0 && !s_all) continue;             /* idle threads, unless ,all */
             fprintf(stderr, "[PROFILE] thread %lu  cpu %.1f%%  samples %u\n",
                     (unsigned long)t->tid, cpu, t->samples);
@@ -318,3 +322,335 @@ void xbox_profile_start_from_env(void)
     h = CreateThread(NULL, 0, prof_main, spec, 0, NULL);
     if (h) CloseHandle(h);
 }
+
+#elif defined(__SWITCH__)
+
+/* The Switch: threads that took a core through xbox_switch_thread_core (the
+ * game, the pushbuffer pump, the Win32 threads) are registered here; the
+ * sampler pauses each in turn (svcSetThreadActivity), reads its program
+ * counter (svcGetThreadContext3) and lets it run again, about a thousand
+ * times a second. The report names functions from "SSX Tricky.sym" next to
+ * the .nro (nm's symbol list, written by the build), else gives offsets
+ * into the .elf for addr2line. Same XBOX_PROFILE=START,SECONDS. */
+#include <switch.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+#define MAX_THREADS 32
+#define MAX_SITES   16384               /* per thread, open addressing */
+
+typedef struct {
+    Handle   h;
+    int      core;
+    unsigned samples, lost, zero;
+    uint64_t first_pc[3];
+    unsigned nsites;
+    struct { uint32_t off; unsigned n; } *site;
+    /* (function the pc is in, link register): who called a leaf function */
+    unsigned ncalls;
+    struct { int32_t fn; uint32_t lr; unsigned n; } *call;
+} SwProfThread;
+
+extern char __start__[];
+static uintptr_t sw_module_base(void);
+extern int __system_argc;
+extern char **__system_argv;
+
+static SwProfThread s_sw[MAX_THREADS];
+static int s_sw_n;
+static Mutex s_sw_lock;
+static int s_sw_on;                     /* XBOX_PROFILE set */
+
+void xbox_profile_note_stall(long long qpc_start, long long qpc_end)
+{ (void)qpc_start; (void)qpc_end; }
+
+/* Called by every thread that takes a core (xbox_switch_thread_core). */
+void xbox_profile_register_thread(int core)
+{
+    if (!s_sw_on) {
+        const char *e = getenv("XBOX_PROFILE");
+        if (!e || !e[0]) return;
+        s_sw_on = 1;
+    }
+    mutexLock(&s_sw_lock);
+    {
+        /* A thread that moves again keeps its one entry, with its new core:
+         * listed twice it was sampled twice, and showed up as two threads. */
+        Handle h = threadGetCurHandle();
+        int i;
+        for (i = 0; i < s_sw_n && s_sw[i].h != h; i++) { }
+        if (i < s_sw_n) s_sw[i].core = core;
+        else if (s_sw_n < MAX_THREADS) {
+            s_sw[s_sw_n].h = h;
+            s_sw[s_sw_n].core = core;
+            s_sw_n++;
+        }
+    }
+    mutexUnlock(&s_sw_lock);
+}
+
+static void sw_record(SwProfThread *t, uint32_t off)
+{
+    unsigned i = (off * 2654435761u) & (MAX_SITES - 1), k;
+    for (k = 0; k < MAX_SITES; k++, i = (i + 1) & (MAX_SITES - 1)) {
+        if (t->site[i].n && t->site[i].off == off) { t->site[i].n++; return; }
+        if (!t->site[i].n) {
+            if (t->nsites >= MAX_SITES * 3 / 4) return;
+            t->site[i].off = off;
+            t->site[i].n = 1;
+            t->nsites++;
+            return;
+        }
+    }
+}
+
+static void sw_record_call(SwProfThread *t, int fn, uint32_t lr)
+{
+    unsigned i = ((uint32_t)fn * 40503u ^ lr * 2654435761u) & (MAX_SITES - 1), k;
+    for (k = 0; k < MAX_SITES; k++, i = (i + 1) & (MAX_SITES - 1)) {
+        if (t->call[i].n && t->call[i].fn == fn && t->call[i].lr == lr) { t->call[i].n++; return; }
+        if (!t->call[i].n) {
+            if (t->ncalls >= MAX_SITES * 3 / 4) return;
+            t->call[i].fn = fn;
+            t->call[i].lr = lr;
+            t->call[i].n = 1;
+            t->ncalls++;
+            return;
+        }
+    }
+}
+
+typedef struct { uint32_t addr, size; char *name; } SwSym;  /* size 0: unknown */
+static SwSym *s_syms;
+static int s_nsyms;
+
+static int sym_cmp(const void *a, const void *b)
+{
+    uint32_t x = ((const SwSym *)a)->addr, y = ((const SwSym *)b)->addr;
+    return x < y ? -1 : x > y;
+}
+
+/* "ADDR [SIZE] T name" lines of nm, next to the .nro (W: weak functions). */
+static void syms_load(void)
+{
+    char path[512], line[512];
+    FILE *f;
+    int cap = 0;
+    const char *nro = __system_argc > 0 ? __system_argv[0] : NULL;
+    const char *slash = nro ? strrchr(nro, '/') : NULL;
+    static int loaded;
+    if (loaded++ || !slash) return;
+    snprintf(path, sizeof path, "%.*s/SSX Tricky.sym", (int)(slash - nro), nro);
+    f = fopen(path, "r");
+    if (!f) { fprintf(stderr, "[PROFILE] no %s: offsets only (addr2line -f -e ssx_tricky.elf)\n", path); return; }
+    while (fgets(line, sizeof line, f)) {
+        unsigned long long a, sz = 0;
+        char type, name[400];
+        if (sscanf(line, "%llx %llx %c %399s", &a, &sz, &type, name) != 4) {
+            sz = 0;
+            if (sscanf(line, "%llx %c %399s", &a, &type, name) != 3) continue;
+        }
+        if (type != 'T' && type != 't' && type != 'W' && type != 'w') continue;
+        if (s_nsyms == cap) {
+            SwSym *n = (SwSym *)realloc(s_syms, sizeof *n * (size_t)(cap = cap ? cap * 2 : 8192));
+            if (!n) break;
+            s_syms = n;
+        }
+        s_syms[s_nsyms].addr = (uint32_t)a;
+        s_syms[s_nsyms].size = (uint32_t)sz;
+        s_syms[s_nsyms].name = strdup(name);
+        s_nsyms++;
+    }
+    fclose(f);
+    qsort(s_syms, (size_t)s_nsyms, sizeof *s_syms, sym_cmp);
+}
+
+static int sym_find(uint32_t off)
+{
+    int lo = 0, hi = s_nsyms - 1, best = -1;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        if (s_syms[m].addr <= off) { best = m; lo = m + 1; } else hi = m - 1;
+    }
+    return best;
+}
+
+typedef struct { uint32_t key; unsigned n; } SwRow;
+static int row_cmp(const void *a, const void *b)
+{
+    unsigned x = ((const SwRow *)a)->n, y = ((const SwRow *)b)->n;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+
+/* The functions the link register points into, for samples in function k:
+ * for a leaf function (no frame of its own, LR untouched) its callers. A
+ * function that calls others shows itself here, and is left out. */
+static void sw_report_callers(const SwProfThread *t, int k, unsigned total)
+{
+    SwRow rows[64];
+    unsigned j, nr = 0, r, shown = 0;
+    if (!t->call) return;
+    for (j = 0; j < MAX_SITES; j++) {
+        int c;
+        uint32_t key;
+        if (!t->call[j].n || t->call[j].fn != k) continue;
+        c = sym_find(t->call[j].lr);
+        key = c >= 0 ? (uint32_t)c : 0xFFFFFFFFu;
+        for (r = 0; r < nr && rows[r].key != key; r++) { }
+        if (r == nr) { if (nr == 64) continue; rows[nr].key = key; rows[nr].n = 0; nr++; }
+        rows[r].n += t->call[j].n;
+    }
+    qsort(rows, nr, sizeof *rows, row_cmp);
+    for (j = 0; j < nr && shown < 4; j++) {
+        double pc = 100.0 * rows[j].n / total;
+        if (pc < 5.0) break;
+        if (rows[j].key == (uint32_t)k) continue;       /* not a leaf: LR is its own */
+        fprintf(stderr, "[PROFILE]            %3.0f%% from %s\n", pc,
+                rows[j].key == 0xFFFFFFFFu ? "(outside the program)" : s_syms[rows[j].key].name);
+        shown++;
+    }
+}
+
+static void sw_report(double secs)
+{
+    static const char *const role[3] = { "game", "renderer (pushbuffer pump)", "other" };
+    int i;
+    syms_load();
+    fprintf(stderr, "[PROFILE] %.1f s, %d threads%s\n", secs, s_sw_n, s_nsyms ? "" : " (offsets into ssx_tricky.elf)");
+    for (i = 0; i < s_sw_n; i++) {
+        SwProfThread *t = &s_sw[i];
+        SwRow *rows;
+        unsigned j, nr = 0, shown = 0;
+        if (!t->samples) {
+            fprintf(stderr, "[PROFILE] thread %d (core %d): no samples (%u empty, %u refused)\n", i, t->core, t->zero, t->lost);
+            continue;
+        }
+        rows = (SwRow *)calloc(t->nsites ? t->nsites : 1, sizeof *rows);
+        if (!rows) continue;
+        for (j = 0; j < MAX_SITES; j++) {
+            unsigned r;
+            uint32_t key;
+            if (!t->site[j].n) continue;
+            key = t->site[j].off;
+            if (s_nsyms) {
+                int k = key != 0xFFFFFFFFu ? sym_find(key) : -1;
+                /* past the last function: not the program's code */
+                if (k == s_nsyms - 1 && key - s_syms[k].addr > 0x10000) k = -1;
+                /* past the end of the function it follows: code with no
+                 * symbol of its own, counted apart rather than lent a name */
+                if (k >= 0 && s_syms[k].size && key - s_syms[k].addr >= s_syms[k].size)
+                    key = 0x80000000u | (uint32_t)k;
+                else
+                    key = k >= 0 ? (uint32_t)k : 0xFFFFFFFFu;
+            }
+            for (r = 0; r < nr && rows[r].key != key; r++) { }
+            if (r == nr) { rows[nr].key = key; rows[nr].n = 0; nr++; }
+            rows[r].n += t->site[j].n;
+        }
+        qsort(rows, nr, sizeof *rows, row_cmp);
+        fprintf(stderr, "[PROFILE] thread %d (core %d, %s): %u samples (%u empty, %u refused), program at 0x%lx, first pc 0x%lx 0x%lx 0x%lx\n",
+                i, t->core, t->core >= 0 && t->core < 3 ? role[t->core] : "?", t->samples, t->zero, t->lost,
+                (unsigned long)sw_module_base(), (unsigned long)t->first_pc[0],
+                (unsigned long)t->first_pc[1], (unsigned long)t->first_pc[2]);
+        for (j = 0; j < nr && shown < 30; j++) {
+            double pc = 100.0 * rows[j].n / t->samples;
+            if (pc < 0.5) break;
+            if (s_nsyms && rows[j].key == 0xFFFFFFFFu)
+                fprintf(stderr, "[PROFILE]   %5.1f%%  (outside the program)\n", pc);
+            else if (s_nsyms && (rows[j].key & 0x80000000u))
+                fprintf(stderr, "[PROFILE]   %5.1f%%  (no symbol, after %s)\n", pc, s_syms[rows[j].key & 0x7FFFFFFFu].name);
+            else if (s_nsyms) {
+                fprintf(stderr, "[PROFILE]   %5.1f%%  %s\n", pc, s_syms[rows[j].key].name);
+                if (shown < 8) sw_report_callers(t, (int)rows[j].key, rows[j].n);
+            }
+            else
+                fprintf(stderr, "[PROFILE]   %5.1f%%  0x%08X\n", pc, rows[j].key);
+            shown++;
+        }
+        free(rows);
+    }
+    fflush(stderr);
+}
+
+/* Where the program's code starts: the start of the memory block that holds
+ * this function (the .nro's code segment begins at the module's base).
+ * __start__ reads back as 0 in the .nro. */
+static uintptr_t sw_module_base(void)
+{
+    MemoryInfo mi;
+    u32 pi;
+    if (R_SUCCEEDED(svcQueryMemory(&mi, &pi, (u64)(uintptr_t)&sw_module_base)))
+        return (uintptr_t)mi.addr;
+    return (uintptr_t)__start__;
+}
+
+static void sw_prof_main(void *arg)
+{
+    const char *e = (const char *)arg;
+    double start = 20.0, secs = 10.0;
+    u64 t0, t1, f = armGetSystemTickFreq();
+    uintptr_t base = sw_module_base();
+    int i;
+    sscanf(e, "%lf,%lf", &start, &secs);
+    svcSleepThread((s64)(start * 1e9));
+    syms_load();                        /* names the callers as it samples */
+    for (i = 0; i < s_sw_n; i++) {
+        s_sw[i].site = calloc(MAX_SITES, sizeof *s_sw[i].site);
+        if (s_nsyms) s_sw[i].call = calloc(MAX_SITES, sizeof *s_sw[i].call);
+    }
+    fprintf(stderr, "[PROFILE] sampling %d threads for %.1f s\n", s_sw_n, secs);
+    t0 = armGetSystemTick();
+    while ((double)(armGetSystemTick() - t0) / (double)f < secs) {
+        for (i = 0; i < s_sw_n; i++) {
+            SwProfThread *t = &s_sw[i];
+            ThreadContext ctx;
+            if (!t->site) continue;
+            if (R_FAILED(svcSetThreadActivity(t->h, ThreadActivity_Paused))) { t->lost++; continue; }
+            /* The pause takes effect when the thread next leaves its core;
+             * until then the context reads back empty: ask again. */
+            int tries = 0;
+            Result rc;
+            while (R_SUCCEEDED(rc = svcGetThreadContext3(&ctx, t->h)) && !ctx.pc.x && ++tries < 20)
+                svcSleepThread(20000);
+            if (R_SUCCEEDED(rc)) {
+                svcSetThreadActivity(t->h, ThreadActivity_Runnable);
+                if (!ctx.pc.x) { t->zero++; continue; }
+                if (t->samples < 3) t->first_pc[t->samples] = ctx.pc.x;
+                t->samples++;
+                sw_record(t, ctx.pc.x - base < 0x100000000ull ? (uint32_t)(ctx.pc.x - base) : 0xFFFFFFFFu);
+                if (t->call && ctx.pc.x - base < 0x100000000ull && ctx.lr - base < 0x100000000ull)
+                    sw_record_call(t, sym_find((uint32_t)(ctx.pc.x - base)), (uint32_t)(ctx.lr - base));
+            } else {
+                svcSetThreadActivity(t->h, ThreadActivity_Runnable);
+                t->lost++;
+            }
+        }
+        svcSleepThread(1000000);
+    }
+    t1 = armGetSystemTick();
+    sw_report((double)(t1 - t0) / (double)f);
+}
+
+void xbox_profile_start_from_env(void)
+{
+    static char spec[64];
+    static Thread th;
+    const char *e = getenv("XBOX_PROFILE");
+    if (!e || !e[0]) return;
+    snprintf(spec, sizeof spec, "%s", e);
+    /* above every game thread, on the core the game leaves free */
+    if (R_SUCCEEDED(threadCreate(&th, sw_prof_main, spec, NULL, 0x10000, 0x2A, 2)))
+        threadStart(&th);
+}
+
+#else /* !_WIN32 && !__SWITCH__ */
+
+/* The sampler suspends threads and reads their contexts through the Win32
+ * debugging API; there is no equivalent here, so XBOX_PROFILE is ignored. */
+void xbox_profile_note_stall(long long qpc_start, long long qpc_end)
+{ (void)qpc_start; (void)qpc_end; }
+void xbox_profile_start_from_env(void) { }
+
+#endif /* _WIN32 / __SWITCH__ */

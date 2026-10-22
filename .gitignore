@@ -33,6 +33,11 @@ xboxrecomp_output/
 build/
 dist/
 build-launcher/
+build-switch/
+build-linux/
+*.nro
+*.nacp
+*.elf
 *.exe
 *.dll
 *.pdb
@@ -64,3 +69,8 @@ Thumbs.db
 # never a private key in git
 *.pem
 *.key
+
+# Switch keys and installable packages: made with your own console keys
+*.keys
+*.nsp
+*.nca

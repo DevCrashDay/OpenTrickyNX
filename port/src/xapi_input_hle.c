@@ -44,7 +44,9 @@
 #include "recomp/recomp_types.h"
 #include "controls.h"
 
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else CPU registers: xbox_guest_regs.h */
 extern __thread uint32_t g_eax;
+#endif
 uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment);
 
 /* xboxrecomp/src/input -- declared here rather than including its header,

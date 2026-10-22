@@ -48,5 +48,10 @@ typedef struct {
 uint64_t nv2a_psh_key(const Nv2aPshState *st);
 /* Writes HLSL for `st` into buf; returns its length, or -1 if it did not fit. */
 int nv2a_psh_generate(const Nv2aPshState *st, char *buf, int size);
+/* The same shader as GLSL 330 core (the OpenGL backend): a std140 uniform
+ * block PshConsts laid out as Nv2aPshConsts, `uniform sampler2D tex0..3`,
+ * an `in NvVary { d0, d1, fog, t0..t3 } i;` block from the vertex shader and
+ * `out vec4 nv_out` at location 0. Returns its length, or -1. */
+int nv2a_psh_generate_glsl(const Nv2aPshState *st, char *buf, int size);
 
 #endif

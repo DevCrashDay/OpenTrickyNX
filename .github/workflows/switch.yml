@@ -1,0 +1,47 @@
+# Build check of the Linux and Nintendo Switch ports (docs/switch.md).
+#
+# The translated game is made from each player's own disc and is never in the
+# repository, so these builds link stubs in its place (SSX_STUB_GEN): they show
+# the runtime and the host code compile and link for both targets, and do not
+# play. Nothing is uploaded.
+
+name: Switch and Linux build check
+
+on:
+  push:
+    branches: [main, switch-port]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build pkg-config \
+            libsdl2-dev libepoxy-dev libgl-dev python3
+      - name: Configure
+        run: cmake -S port -B port/build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DSSX_STUB_GEN=ON
+      - name: Build
+        run: cmake --build port/build-linux
+
+  switch:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python
+        run: |
+          command -v python3 >/dev/null || { apt-get update && apt-get install -y --no-install-recommends python3; }
+      - name: Configure
+        run: /opt/devkitpro/portlibs/switch/bin/aarch64-none-elf-cmake -S port -B port/build-switch
+               -DCMAKE_BUILD_TYPE=Release -DSSX_STUB_GEN=ON
+      - name: Build
+        run: cmake --build port/build-switch -j "$(nproc)"
+      - name: The .nro is there
+        run: test -s "port/build-switch/SSX Tricky.nro"

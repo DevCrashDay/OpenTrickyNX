@@ -41,6 +41,12 @@
 #define RECOMP_TYPES_H
 
 #include <stdint.h>
+#if defined(XBOX_GUEST_REGS_IN_CPU) && defined(RECOMP_GENERATED_CODE)
+/* The translated code runs only on threads started through
+ * xbox_guest_regs_call(), where x26 holds this thread's xbox_gtls. */
+#undef XBOX_GTLS
+#define XBOX_GTLS g_xbox_gtls
+#endif
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
@@ -83,8 +89,17 @@
  * When mapped elsewhere, this adjusts all memory accesses.
  *
  * Set once during memory initialization, then read-only.
+ *
+ * The translated code sees it const, which it is by the time any of that code
+ * runs: the compiler then loads it once per function instead of again after
+ * every guest store and every call (any of which could otherwise have
+ * changed it).
  */
+#ifdef RECOMP_GENERATED_CODE
+extern const ptrdiff_t g_xbox_mem_offset;
+#else
 extern ptrdiff_t g_xbox_mem_offset;
+#endif
 
 /* ================================================================
  * Global registers
@@ -107,8 +122,10 @@ extern ptrdiff_t g_xbox_mem_offset;
  */
 /* Thread-local: each real Xbox thread (see bridge_PsCreateSystemThreadEx) gets its own
  * independent register state -- see the definition in xbox_memory_layout.c for why. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else CPU registers: xbox_guest_regs.h */
 extern __thread uint32_t g_eax, g_ecx, g_edx, g_esp;
 extern __thread uint32_t g_ebx, g_esi, g_edi;
+#endif
 
 /**
  * SEH frame pointer bridge.
@@ -118,7 +135,9 @@ extern __thread uint32_t g_ebx, g_esi, g_edi;
  * The prolog writes g_seh_ebp, and the caller reads it after the call.
  * Similarly, __SEH_epilog reads g_seh_ebp at entry and writes it at exit.
  */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread uint32_t g_seh_ebp;
+#endif
 
 /*
  * Carry-in across a lifted function boundary.
@@ -133,7 +152,9 @@ extern __thread uint32_t g_seh_ebp;
  * Callers on such an edge set this before the tail call; those callees
  * initialise their `_cf` from it instead of 0.
  */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread int g_recomp_cf_in;
+#endif
 
 /**
  * FPU-stack cross-call bridge, for CRT_ftol_TruncateToInt64 (and any sibling
@@ -164,7 +185,9 @@ extern __thread int g_recomp_cf_in;
  * `CRT_ftol_TruncateToInt64()`; the function itself reads it in place of its
  * own (otherwise-empty) `fp_top()` for the "fld st(0)" duplicate at entry.
  */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread double g_ftol_arg;
+#endif
 
 /**
  * Shared FPU stack for the `CRT_ftol_TruncateToInt64` fragment chain
@@ -188,8 +211,10 @@ extern __thread double g_ftol_arg;
  * project-wide change, for the same risk-management reason as `g_ftol_arg`
  * above.
  */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread double g_ftol_fp_stack[8];
 extern __thread int g_ftol_fp_top;
+#endif
 
 /**
  * Shadow of the real x87 ST(0) register, mirrored by every function-local
@@ -211,7 +236,9 @@ extern __thread int g_ftol_fp_top;
  * correctly through their own local stack -- only the orphan sites that
  * had no local stack at all needed to change what they read.
  */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread double g_x87_st0;
+#endif
 
 /* x87 comparison result, as the status word's C3/C2/C0 bits would encode it.
  *
@@ -223,13 +250,17 @@ extern __thread double g_x87_st0;
  * It is a global rather than a local because the status word is CPU state that
  * outlives a function: several lifted fragments run the `fnstsw` for a compare
  * their caller performed. -1 = ST(0) < operand, 0 = equal, 1 = ST(0) > operand. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread int g_fpu_cmp;
+#endif
 
 /* The x87 control word, for its rounding-control field (bits 10-11): MSVC's
  * _ftol switches to truncation with fldcw before a fistp, while code that
  * issues fistp directly rounds to nearest. fnstcw/fldcw read and write this;
  * fistp and frndint round through x87_rint. 0x027F is the power-on value. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread uint16_t g_x87_cw;
+#endif
 /* 80-bit extended values (fld/fstp tbyte): 64-bit mantissa with an explicit
  * integer bit, 15-bit exponent biased by 16383, sign in bit 79. The simulated
  * register file holds doubles, so these convert at the boundary. */
@@ -274,7 +305,9 @@ static inline double x87_rint(double v)
  * 0 means the operation ended equal (ZF set), non-zero means it did not.
  * The branch that reads it can be several lines later, so it has to survive
  * between the two. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread int g_str_ne;
+#endif
 
 /* The x87 control word.
  *
@@ -290,7 +323,9 @@ extern __thread int g_str_ne;
  * real exceptions to mask -- what matters is that a value stored is the value
  * read back. 0x027F is the x87's own initial value: all six exceptions masked,
  * round to nearest, 64-bit precision. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread uint16_t g_x87_cw;
+#endif
 
 /* The condition bits in AH (C0 0x01, C1 0x02, C2 0x04, C3 0x40) as `fnstsw`
  * reads them. g_fpu_cmp normally holds a comparison (-1/0/1: C0 for less,
@@ -370,8 +405,10 @@ static inline uint32_t ROR16(uint32_t v, int n) { v &= 0xFFFFu; n &= 15; return 
  * one left there rather than 0.0. Thread-local because each guest thread has
  * its own FPU state.
  */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread double g_fp_stack[8];
 extern __thread int g_fp_top;
+#endif
 
 /**
  * Float return across a call (tools/audit/fpretcheck.py). fixfpret.py's
@@ -481,7 +518,9 @@ void recomp_debugbreak_log_once(const char *site);
  * 0 means "no slot claimed": the access falls through to the shared block at
  * VA 0, which is the old behaviour.
  */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread uint32_t g_xbox_tib_va;
+#endif
 
 /* Where the synthetic kernel PE header actually lives. This mirrors
  * xbox_memory_layout.h's XBOX_FAKE_KERNEL_HEADER_VA, which this header cannot
@@ -512,9 +551,11 @@ extern uint32_t g_xbox_fake_hdr_va;
  * These carry the operands instead of the flags, which is enough to rebuild
  * every condition except the overflow and parity ones.
  */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread uint32_t g_cmp_a;
 extern __thread uint32_t g_cmp_b;
 extern __thread int      g_cmp_test;   /* 1 = `test` (CF/OF clear), 0 = `cmp` */
+#endif
 
 #define SPLIT_CMP(a_, b_, test_)     (g_cmp_a = (uint32_t)(a_), g_cmp_b = (uint32_t)(b_), g_cmp_test = (test_))
 
@@ -545,11 +586,57 @@ extern __thread int      g_cmp_test;   /* 1 = `test` (CF/OF clear), 0 = `cmp` */
 #ifndef FORK_FAST_RESOLVE
 #define FORK_FAST_RESOLVE 1
 #endif
+/*
+ * Compact guest layout (every host but Windows; xboxrecomp's
+ * xbox_compact_layout.h): the guest lives in one block of RAM plus the 48 MB
+ * hardware aperture, so ordinary addresses are only identity below the RAM
+ * size and everything else folds -- the aperture to the slot after RAM, the
+ * rest modulo RAM, the bytes Windows' mirror views alias. Must match
+ * xbox_compact_fold.
+ */
+#ifndef XBOX_COMPACT_LAYOUT
+#if defined(_WIN32)
+#define XBOX_COMPACT_LAYOUT 0
+#else
+#define XBOX_COMPACT_LAYOUT 1
+#endif
+#endif
+#if XBOX_COMPACT_LAYOUT
+#define XBOX_IDENTITY_LIMIT 0x08C00000u /* XBOX_TOTAL_RAM */
+static inline uint32_t xbox_recomp_fold(uint32_t va) {
+    if (va < XBOX_IDENTITY_LIMIT) return va;
+    if (va >= 0xFD000000u) return XBOX_IDENTITY_LIMIT + (va - 0xFD000000u);
+    return va % XBOX_IDENTITY_LIMIT;
+}
+#else
+#define XBOX_IDENTITY_LIMIT 0x80000000u
+#define xbox_recomp_fold(va) (va)
+#endif
+
+#ifndef XBOX_NULL_IN_PAGE0
+#define XBOX_NULL_IN_PAGE0 0
+#endif
+#ifndef XBOX_STACK_UNCHECKED
+#define XBOX_STACK_UNCHECKED XBOX_NULL_IN_PAGE0
+#endif
 #if FORK_FAST_RESOLVE
 static uint32_t xbox_resolve_uncached_alias_slow(uint32_t va) __attribute__((noinline, unused));
 static inline __attribute__((always_inline)) uint32_t xbox_resolve_uncached_alias(uint32_t va) {
-    if (__builtin_expect((uint32_t)(va - 0x100u) < 0x80000000u - 0x100u, 1))
+#if XBOX_NULL_IN_PAGE0
+    /* Null-pointer accesses land on guest page 0 itself instead of the
+     * XBOX_NULL_PAGE_VA page below, for one compare against an immediate
+     * instead of a subtract, a compare and a 32-bit constant on every access.
+     * Not the same page as far as the title can tell: page 0 also takes the
+     * fs: accesses of threads without a TIB and the host's own null
+     * accesses, and on the Switch a sky effect then flashed white when a new
+     * part of a course came in. Off by default (XBOX_STACK_UNCHECKED keeps
+     * the stack's own fast path). */
+    if (__builtin_expect(va < XBOX_IDENTITY_LIMIT, 1))
         return va;
+#else
+    if (__builtin_expect((uint32_t)(va - 0x100u) < XBOX_IDENTITY_LIMIT - 0x100u, 1))
+        return va;
+#endif
     /* The D3D runtime writes the push buffer through the uncached and
      * write-combined aliases: as hot as ordinary addresses in a race. */
     if ((va & 0xFC000000u) == 0x80000000u && (va & 0xFFFFF000u) != 0x80010000u)
@@ -635,7 +722,7 @@ static inline uint32_t xbox_resolve_uncached_alias(uint32_t va) {
     if (va >= 0xF0000000u && va < 0xF4000000u) {
         return va & 0x03FFFFFFu;
     }
-    return va;
+    return xbox_recomp_fold(va);
 }
 
 /**
@@ -727,8 +814,10 @@ typedef union recomp_xmm_u {
  * sub_00030CA0 took rcpps of garbage and wrote NaN into the rider). Same
  * cure as the x87 stack: one register file, as on the CPU.
  * Defined in recomp_manual.c. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread recomp_xmm_t g_xmm[8];
 extern __thread uint64_t g_mm[8];
+#endif
 #define xmm0 g_xmm[0]
 #define xmm1 g_xmm[1]
 #define xmm2 g_xmm[2]
@@ -784,6 +873,27 @@ extern __thread uint64_t g_mm[8];
 
 /** A 64-bit memory operand, for the MMX loads and stores. */
 #define MEM64(addr)  (*(volatile uint64_t *)XBOX_PTR(addr))
+
+/*
+ * Accesses at esp (port/tools/fork/fix_stack_access.py, PUSH32/POP32): the
+ * stack is always guest RAM, where the address check returns the address
+ * unchanged, so with XBOX_STACK_UNCHECKED they skip it. Otherwise they are
+ * the checked forms above.
+ */
+#if XBOX_STACK_UNCHECKED
+#define XBOX_STK_PTR(addr) ((uintptr_t)(uint32_t)(addr) + g_xbox_mem_offset)
+#else
+#define XBOX_STK_PTR(addr) XBOX_PTR(addr)
+#endif
+#define MEM8_STK(addr)   (*(volatile uint8_t  *)XBOX_STK_PTR(addr))
+#define MEM16_STK(addr)  (*(volatile uint16_t *)XBOX_STK_PTR(addr))
+#define MEM32_STK(addr)  (*(volatile uint32_t *)XBOX_STK_PTR(addr))
+#define MEM64_STK(addr)  (*(volatile uint64_t *)XBOX_STK_PTR(addr))
+#define SMEM8_STK(addr)  (*(volatile int8_t   *)XBOX_STK_PTR(addr))
+#define SMEM16_STK(addr) (*(volatile int16_t  *)XBOX_STK_PTR(addr))
+#define SMEM32_STK(addr) (*(volatile int32_t  *)XBOX_STK_PTR(addr))
+#define MEMF_STK(addr)   (*(volatile float    *)XBOX_STK_PTR(addr))
+#define MEMD_STK(addr)   (*(volatile double   *)XBOX_STK_PTR(addr))
 
 /*
  * MMX.
@@ -1026,12 +1136,12 @@ static inline uint32_t ROR32(uint32_t val, int n) {
 #define PUSH32(sp, val) do { \
     uint32_t _pv = (uint32_t)(val); \
     (sp) -= 4; \
-    MEM32(sp) = _pv; \
+    MEM32_STK(sp) = _pv; \
 } while(0)
 
 /** Pop a 32-bit value from the simulated stack. */
 #define POP32(sp, dst) do { \
-    (dst) = MEM32(sp); \
+    (dst) = MEM32_STK(sp); \
     (sp) += 4; \
 } while(0)
 
@@ -1213,6 +1323,7 @@ void (*recomp_resolve_icall(uint32_t va))(void);
  * that seemed to crash was a player pressing A during the test run). */
 #define _fp_stack g_fp_stack
 #define _fp_top   g_fp_top
+
 #endif
 
 

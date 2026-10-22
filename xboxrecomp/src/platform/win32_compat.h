@@ -18,6 +18,31 @@
 
 #include "xbox_winnt.h"
 
+#include <stdlib.h>
+#if defined(__SWITCH__)
+#include <malloc.h>
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Aligned memory, freed with free(): newlib on the Switch has memalign but
+ * not posix_memalign. */
+static inline void *xbox_aligned_alloc(size_t align, size_t size)
+{
+#if defined(__SWITCH__)
+    return memalign(align, size);
+#else
+    void *p = NULL;
+    return posix_memalign(&p, align, size) == 0 ? p : NULL;
+#endif
+}
+
+#ifdef __cplusplus
+}
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -151,6 +176,14 @@ HANDLE GetCurrentThread(void);
 HANDLE GetCurrentProcess(void);
 DWORD  GetCurrentProcessId(void);
 BOOL   SetThreadPriority(HANDLE h, int priority);
+#if defined(__SWITCH__)
+/* A host timing thread (vblank, kernel timers, APU frames) raises itself to a
+ * real Horizon priority; SetThreadPriority only records one. */
+void   xbox_switch_host_priority(int priority);
+/* Put the calling thread on core `ideal` (0 the game, 1 the pushbuffer
+ * pump, 2 everything else), free to move to the others. */
+void   xbox_switch_thread_core(int ideal);
+#endif
 int    GetThreadPriority(HANDLE h);
 VOID   SwitchToThread(void);
 DWORD  QueueUserAPC(PAPCFUNC func, HANDLE thread, ULONG_PTR data);
@@ -286,7 +319,42 @@ int   MessageBoxA(HWND hwnd, LPCSTR text, LPCSTR caption, UINT type);
 #define VK_F3        0x72
 #define VK_F4        0x73
 #define VK_F5        0x74
+#define VK_F6        0x75
+#define VK_F7        0x76
+#define VK_F8        0x77
+#define VK_F9        0x78
+#define VK_F10       0x79
+#define VK_F11       0x7A
 #define VK_F12       0x7B
+#define VK_F24       0x87
+#define VK_SNAPSHOT  0x2C
+#define VK_LWIN      0x5B
+#define VK_RWIN      0x5C
+#define VK_NUMPAD0   0x60
+#define VK_NUMPAD1   0x61
+#define VK_NUMPAD2   0x62
+#define VK_NUMPAD3   0x63
+#define VK_NUMPAD4   0x64
+#define VK_NUMPAD5   0x65
+#define VK_NUMPAD6   0x66
+#define VK_NUMPAD7   0x67
+#define VK_NUMPAD8   0x68
+#define VK_NUMPAD9   0x69
+#define VK_SEPARATOR 0x6C
+#define VK_DECIMAL   0x6E
+#define VK_LSHIFT    0xA0
+#define VK_RSHIFT    0xA1
+#define VK_LCONTROL  0xA2
+#define VK_RCONTROL  0xA3
+#define VK_LMENU     0xA4
+#define VK_RMENU     0xA5
+#define VK_OEM_1     0xBA
+#define VK_OEM_2     0xBF
+#define VK_OEM_3     0xC0
+#define VK_OEM_4     0xDB
+#define VK_OEM_5     0xDC
+#define VK_OEM_6     0xDD
+#define VK_OEM_7     0xDE
 #define VK_OEM_PLUS  0xBB
 #define VK_OEM_COMMA 0xBC
 #define VK_OEM_MINUS 0xBD
@@ -323,6 +391,26 @@ typedef struct _XINPUT_STATE {
     XINPUT_GAMEPAD Gamepad;
 } XINPUT_STATE;
 DWORD XInputGetState(DWORD idx, XINPUT_STATE *state);
+
+/* ---- Resources (RCDATA by name, read from files; see win32_compat.c) ---- */
+typedef void *HRSRC;
+#ifndef MAKEINTRESOURCEA
+#define MAKEINTRESOURCEA(i) ((LPSTR)(uintptr_t)(i))
+#endif
+void    w32_set_resource_dir(const char *dir);
+HRSRC   FindResourceA(HMODULE mod, LPCSTR name, LPCSTR type);
+HGLOBAL LoadResource(HMODULE mod, HRSRC res);
+LPVOID  LockResource(HGLOBAL g);
+DWORD   SizeofResource(HMODULE mod, HRSRC res);
+/* The executable's path for GetModuleFileNameA where the host has no
+ * /proc/self/exe (the Switch: the .nro path from argv[0]). */
+void    w32_set_module_path(const char *path);
+typedef struct _XINPUT_VIBRATION {
+    WORD wLeftMotorSpeed;
+    WORD wRightMotorSpeed;
+} XINPUT_VIBRATION;
+/* Provided by the game port (none in the platform layer). */
+DWORD XInputSetState(DWORD idx, XINPUT_VIBRATION *vibration);
 
 #define XINPUT_GAMEPAD_DPAD_UP        0x0001
 #define XINPUT_GAMEPAD_DPAD_DOWN      0x0002
@@ -528,6 +616,66 @@ static inline MMRESULT waveOutWrite(HWAVEOUT h, WAVEHDR *hdr, UINT sz)
 { (void)h;(void)hdr;(void)sz; return MMSYSERR_NOERROR; }
 static inline MMRESULT waveOutReset(HWAVEOUT h) { (void)h; return MMSYSERR_NOERROR; }
 static inline MMRESULT waveOutClose(HWAVEOUT h) { (void)h; return MMSYSERR_NOERROR; }
+
+/* ---- Slim reader/writer locks ----------------------------------------- */
+/* Same single-pointer layout as Win32; the pointer is a lazily created
+ * pthread_rwlock_t, so SRWLOCK_INIT (all zero) works for statics. */
+typedef struct { PVOID Ptr; } SRWLOCK, *PSRWLOCK;
+#define SRWLOCK_INIT { NULL }
+VOID    InitializeSRWLock(PSRWLOCK l);
+VOID    AcquireSRWLockExclusive(PSRWLOCK l);
+VOID    ReleaseSRWLockExclusive(PSRWLOCK l);
+VOID    AcquireSRWLockShared(PSRWLOCK l);
+VOID    ReleaseSRWLockShared(PSRWLOCK l);
+BOOLEAN TryAcquireSRWLockExclusive(PSRWLOCK l);
+
+PVOID InterlockedExchangePointer(PVOID volatile *Target, PVOID Value);
+#define MemoryBarrier() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+#define YieldProcessor() do { } while (0)
+
+/* ---- Waitable timers --------------------------------------------------- */
+/* One-shot and periodic; waitable through WaitForSingleObject and
+ * WaitForMultipleObjects like the other objects here. */
+#define TIMER_ALL_ACCESS                       0x001F0003u
+#define CREATE_WAITABLE_TIMER_MANUAL_RESET     0x00000001u
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION  0x00000002u
+typedef VOID (WINAPI *PTIMERAPCROUTINE)(LPVOID arg, DWORD low, DWORD high);
+HANDLE CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name, DWORD flags, DWORD access);
+HANDLE CreateWaitableTimerW(LPSECURITY_ATTRIBUTES sa, BOOL manualReset, LPCWSTR name);
+BOOL   SetWaitableTimer(HANDLE timer, const LARGE_INTEGER *due, LONG period,
+                        PTIMERAPCROUTINE routine, LPVOID arg, BOOL resume);
+BOOL   CancelWaitableTimer(HANDLE timer);
+
+#define MAXIMUM_WAIT_OBJECTS 64
+#define ERROR_NOT_OWNER      288u
+
+/* ---- Memory query states (VirtualQuery) ------------------------------- */
+#define MEM_FREE     0x00010000u
+#define MEM_PRIVATE  0x00020000u
+#define MEM_MAPPED   0x00040000u
+#define MEM_IMAGE    0x01000000u
+
+/* ---- Modules, debugging and stack traces (inert on POSIX) ------------- */
+/* There is one module (this executable) and no symbol table to walk; the
+ * diagnostics that use these report raw addresses instead. */
+HMODULE GetModuleHandleA(LPCSTR name);
+HMODULE GetModuleHandleW(LPCWSTR name);
+#define GetModuleHandle GetModuleHandleA
+DWORD   GetModuleFileNameA(HMODULE mod, LPSTR buf, DWORD size);
+USHORT  CaptureStackBackTrace(ULONG skip, ULONG count, PVOID *frames, PULONG hash);
+BOOL    IsDebuggerPresent(void);
+VOID    DebugBreak(void);
+BOOL    HeapValidate(HANDLE heap, DWORD flags, LPCVOID mem);
+
+/* ---- Paths -------------------------------------------------------------- */
+DWORD GetTempPathA(DWORD size, LPSTR buf);
+BOOL  CreateDirectoryA(LPCSTR path, LPSECURITY_ATTRIBUTES sa);
+DWORD GetFileAttributesA(LPCSTR path);
+#define INVALID_FILE_ATTRIBUTES 0xFFFFFFFFu
+
+/* MSVC 64-bit stdio seeks. */
+#define _fseeki64 fseeko
+#define _ftelli64 ftello
 
 #ifdef __cplusplus
 }

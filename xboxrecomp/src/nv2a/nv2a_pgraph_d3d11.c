@@ -2516,7 +2516,11 @@ static void wclip_update(void)
  * programs that write constant registers, attribute formats or alignments
  * the input assembler cannot read. XBOX_VSH_GPU=0 keeps everything on the
  * CPU, for comparison. */
+#ifdef _WIN32
 #include <dxgiformat.h>
+#else
+#include "nv2a_dxgi_shim.h"   /* the DXGI_FORMAT numbers, for the (D3D11-only) GPU vertex path */
+#endif
 #include "../d3d/d3d8_nv2a_vsh.h"
 int d3d8_nv2a_vsh_ready(const Nv2aVshDraw *d);
 unsigned int d3d8_GetBackbufferWidth(void);    /* d3d8_internal.h: the title's 640x480 */
@@ -3691,7 +3695,11 @@ static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count
             key = nv2a_psh_key(&ps);
         if (g_perf_on) perf_add(PZ_PSH, perf_now() - ptk);
         if (!d3d8_nv2a_has_ps(key)) {
+#ifdef _WIN32
             int len = nv2a_psh_generate(&ps, hlsl, (int)sizeof hlsl);
+#else       /* the OpenGL backend (d3d8_gl_*.c) takes GLSL 330 */
+            int len = nv2a_psh_generate_glsl(&ps, hlsl, (int)sizeof hlsl);
+#endif
             {
                 /* XBOX_NV2A_PSH_DUMP=<dir> (diagnostic): write each new pixel
                  * shader's HLSL as <dir>/psh_<key>.hlsl. */

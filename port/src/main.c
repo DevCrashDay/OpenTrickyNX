@@ -159,9 +159,13 @@ static BOOL s_crash_dialog = FALSE;
  * code below reads whichever thread's state it runs on, which is correct: a
  * crash is always reported from the thread that actually faulted. */
 
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else CPU registers: xbox_guest_regs.h */
 extern __thread uint32_t g_eax, g_ecx, g_edx, g_esp;
 extern __thread uint32_t g_ebx, g_esi, g_edi;
+#endif
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread uint32_t g_seh_ebp;
+#endif
 void recomp_probe_init_from_env(void);
 extern ptrdiff_t g_xbox_mem_offset;
 
@@ -265,8 +269,13 @@ static int open_launcher_instead(const char *why)
     }
     {
         char msg[768];
+#ifdef _WIN32
         snprintf(msg, sizeof msg, "%s\n\nChoose your SSX Tricky (USA) Xbox disc image in OpenTricky.exe, "
                  "the game's launcher.", why);
+#else
+        snprintf(msg, sizeof msg, "%s\n\nPut your SSX Tricky (USA) Xbox disc image (.iso) in the game's "
+                 "folder, or name it as DiscImage in settings.ini there.", why);
+#endif
         MessageBoxA(NULL, msg, "SSX Tricky", MB_ICONWARNING);
     }
     return 0;
@@ -299,14 +308,24 @@ static BOOL load_xbe_from_iso(const char *rel_path, void **out_data, size_t *out
     void    *data;
 
     if (!xdvdfs_find(rel_path, &sector, &size, &attrs) ||
-        (attrs & XDVDFS_ATTR_DIRECTORY) || size == 0)
+        (attrs & XDVDFS_ATTR_DIRECTORY) || size == 0) {
+        fprintf(stderr, "  %s: not found on the disc image (sector %u, %u bytes, attributes 0x%02X)\n",
+                rel_path, sector, size, attrs);
         return FALSE;
+    }
 
     data = malloc(size);
-    if (!data) return FALSE;
+    if (!data) {
+        fprintf(stderr, "  %s: no memory for %u bytes\n", rel_path, size);
+        return FALSE;
+    }
 
     got = xdvdfs_read(sector, size, 0, data, size);
-    if (got != size) { free(data); return FALSE; }
+    if (got != size) {
+        fprintf(stderr, "  %s: read %u of %u bytes at sector %u\n", rel_path, got, size, sector);
+        free(data);
+        return FALSE;
+    }
 
     *out_data = data;
     *out_size = size;
@@ -326,6 +345,9 @@ static void resolve_from_exe(const char *rel, char *out, size_t out_sz);
 static void resolve_from_exe_or_absolute(const char *p, char *out, size_t out_sz)
 {
     BOOL absolute = (p[0] && p[1] == ':') || (p[0] == '\\' && p[1] == '\\');
+#ifndef _WIN32
+    if (p[0] == '/' || strstr(p, ":/")) absolute = TRUE;           /* "/home/..", "sdmc:/.." */
+#endif
     if (absolute) {
         strncpy(out, p, out_sz - 1);
         out[out_sz - 1] = '\0';
@@ -347,7 +369,7 @@ static void resolve_from_exe(const char *rel, char *out, size_t out_sz)
         return;
     }
 
-    slash = strrchr(exe, '\\');
+    slash = path_last_sep(exe);
     if (slash) *slash = '\0'; else exe[0] = '\0';
 
     snprintf(joined, sizeof(joined), "%s\\%s", exe, rel);
@@ -372,7 +394,7 @@ static void resolve_from_exe_u8(const char *rel, char *out, size_t out_sz)
         snprintf(out, out_sz, "%s", rel);
         return;
     }
-    slash = wcsrchr(exe, L'\\');
+    slash = path_last_sep_w(exe);
     if (slash) *slash = L'\0'; else exe[0] = L'\0';
     _snwprintf(joined, MAX_PATH * 2, L"%ls\\%ls", exe, wrel);
     joined[MAX_PATH * 2 - 1] = 0;
@@ -404,6 +426,7 @@ extern size_t recomp_dispatch_init(void);
  *   - Add dumps of game-specific globals (heap handles, state flags)
  *   - Add SEH simulation if your game uses __try/__except
  */
+#ifdef _WIN32
 /* End of the stack scan below: 8 KB above the faulting rsp, but never past
  * the top of the thread's stack. A fault near the top of a shallow stack (a
  * thread that just started) otherwise faulted again inside this handler,
@@ -639,6 +662,8 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+#endif /* _WIN32: on other hosts host_fault traps the registers */
+
 /*
  * Who reads guest VA 8 / 0xC?
  *
@@ -755,8 +780,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      * not one the desktop scales up and blurs. */
     launcher_enable_dpi_awareness();
 
+#ifdef _WIN32
     /* Install VEH handler (first handler in chain) */
     AddVectoredExceptionHandler(1, veh_handler);
+#endif
 
     /* Rider command log (XBOX_NETLOG=1). Off by default, and then
      * recomp_lookup_manual() hands out none of its hooks. */
@@ -833,8 +860,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         BOOL direct = has_flag(L"--direct") || cli != NULL ||
                       (output_is_redirected() && !has_flag(L"--play"));
         use_config = !direct;
+#ifndef _WIN32
+        BOOL use_config_folder = FALSE;
+#endif
 
+#ifndef _WIN32
+        /* No launcher here to choose a disc. Without DiscImage in
+         * settings.ini: the extracted disc in "game" beside the game (as the
+         * other Switch ports of Xbox games use), else the first .iso there. */
+        if (use_config && !launch_cfg.iso[0]) {
+            char xbe[MAX_PATH];
+            FILE *f;
+            resolve_from_exe(YOUR_GAME_XBE_PATH, xbe, sizeof xbe);
+            if ((f = fopen(xbe, "rb")) != NULL) {
+                fclose(f);
+                use_config_folder = TRUE;
+                printf("Game disc: the extracted files in %s\n", xbe);
+            } else {
+                ot_find_iso(launch_cfg.iso, sizeof launch_cfg.iso);
+            }
+        }
+        if (use_config && !use_config_folder) {
+#else
         if (use_config) {
+#endif
             /* A relative DiscImage is relative to the install root, as in the
              * launcher: not to the working folder (bin\ on a double-click). */
             char why[512], iso[MAX_PATH];
@@ -847,7 +896,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             if (!xdvdfs_mount(iso))
                 return open_launcher_instead("The disc image could not be opened.");
             printf("Game disc: %s (ISO)\n", iso);
-        } else {
+        } else if (!use_config) {
             char iso_path[MAX_PATH];
             BOOL mounted = FALSE;
 
@@ -888,8 +937,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
     /* The log file, if the player asked for one: everything the game reports
      * goes to "<exe name>.log" beside settings.ini, replacing the previous run's. The
-     * executable has no console, so without this a crash leaves nothing. */
+     * executable has no console, so without this a crash leaves nothing.
+     * The Switch build always logs, from its first line (ot_host_init). */
+#if defined(__SWITCH__)
+    if (0) {
+#else
     if (use_config && launch_cfg.log_file) {
+#endif
         FILE *t;
         launcher_log_path(s_log_path, sizeof s_log_path);
         t = fopen(s_log_path, "w");
@@ -971,6 +1025,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         /* The menu is there in every mode; only launcher starts save to the
          * .ini, so a test run never rewrites the player's settings. */
         hostui_install(NULL, FALSE);
+    }
+    {   /* XBOX_SHOW_FPS=1/0 wins over ShowFrameRate (the Switch's env.txt) */
+        const char *sf = getenv("XBOX_SHOW_FPS");
+        if (sf && sf[0]) d3d8_SetShowFps(sf[0] == '1');
     }
 
     /* The fork options of the launcher ([Fork] in the .ini) become
@@ -1525,6 +1583,7 @@ static BOOL load_xbe(const char *path, void **out_data, size_t *out_size)
  * ------------------------------------------------------------------ */
 extern volatile unsigned g_last_loc;
 
+#ifdef _WIN32
 static LONG WINAPI recomp_crash_filter(EXCEPTION_POINTERS *ep)
 {
     const EXCEPTION_RECORD *r = ep->ExceptionRecord;
@@ -1591,12 +1650,49 @@ static LONG WINAPI recomp_crash_filter(EXCEPTION_POINTERS *ep)
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
-int main(int argc, char **argv)
+#endif /* _WIN32 */
+
+static int ot_main(int argc, char **argv)
 {
+#ifndef _WIN32
+    ot_set_args(argc, argv);    /* the command line, the executable's folder */
+    ot_host_init();             /* the Switch's file systems, controllers */
+#endif
     crashreport_install();      /* XBOX_CRASH_REPORT=0: nothing */
+#ifdef _WIN32
     SetUnhandledExceptionFilter(recomp_crash_filter);
+#endif
 
     (void)argc;
     (void)argv;
+#ifdef __SWITCH__
+    {
+        int rc = WinMain(GetModuleHandle(NULL), NULL, GetCommandLineA(), SW_SHOW);
+        printf("The game returned %d\n", rc);
+        return rc;
+    }
+#else
     return WinMain(GetModuleHandle(NULL), NULL, GetCommandLineA(), SW_SHOW);
+#endif
+}
+
+#ifdef XBOX_GUEST_REGS_IN_CPU
+/* The guest registers are CPU registers here (xbox_guest_regs.h): start them
+ * at 0, as the __thread copies did, and give the C runtime its own back. */
+struct ot_main_args { int argc; char **argv; };
+static void *ot_main_entry(void *p)
+{
+    struct ot_main_args *a = (struct ot_main_args *)p;
+    return (void *)(intptr_t)ot_main(a->argc, a->argv);
+}
+#endif
+
+int main(int argc, char **argv)
+{
+#ifdef XBOX_GUEST_REGS_IN_CPU
+    struct ot_main_args a = { argc, argv };
+    return (int)(intptr_t)xbox_guest_regs_call(ot_main_entry, &a);
+#else
+    return ot_main(argc, argv);
+#endif
 }

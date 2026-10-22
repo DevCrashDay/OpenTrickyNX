@@ -397,4 +397,43 @@ bool apu_hook_handle_mmio(PCONTEXT ctx, uintptr_t fault_addr,
     return apu_decode_and_handle(ctx, mmio_offset, is_write);
 }
 
+#else /* !_WIN32 */
+#include "platform/host_fault.h"
+#include "kernel/xbox_compact_layout.h"
+
+#define APU_MMIO_BASE  0xFE800000u
+#define APU_MMIO_SIZE  0x00080000u  /* 512KB */
+
+/* Every other host: host_fault decodes the load or store (x86-64 on a Linux
+ * PC, AArch64 on the Switch) and hands the access here. */
+static bool apu_trap_access(uint32_t va, unsigned size, int is_write, uint64_t *val)
+{
+    uint32_t off = va - APU_MMIO_BASE;
+    if (!g_apu_state) return false;
+    if (is_write) mcpx_apu_mmio_write(g_apu_state, off, *val, size);
+    else          *val = mcpx_apu_mmio_read(g_apu_state, off, size);
+    return true;
+}
+
+bool apu_mmio_install(uint8_t *mem_base)
+{
+    if (!g_apu_state) {
+        g_apu_state = mcpx_apu_init_standalone(mem_base);
+        if (!g_apu_state) {
+            fprintf(stderr, "  [APU] init failed -- aperture left as plain RAM\n");
+            fflush(stderr);
+            return false;
+        }
+    }
+    if (!host_trap_register(xbox_host_ptr(APU_MMIO_BASE), APU_MMIO_BASE,
+                            APU_MMIO_SIZE, apu_trap_access)) {
+        fprintf(stderr, "  [APU] could not guard the aperture -- registers stay plain RAM\n");
+        fflush(stderr);
+        return false;
+    }
+    fprintf(stderr, "  [APU] MCPX aperture trapped at Xbox VA 0x%08X (%u bytes)\n",
+            APU_MMIO_BASE, APU_MMIO_SIZE);
+    fflush(stderr);
+    return true;
+}
 #endif /* _WIN32 */

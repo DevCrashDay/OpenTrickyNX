@@ -21,6 +21,7 @@ set(KERNEL_SOURCES
     kernel_thunks.c
     kernel_bridge.c
     xbox_memory_layout.c
+    xbox_guest_regs.c
     xbox_diag.c
     xbox_profile.c
     xbox_perf.c
@@ -42,9 +43,9 @@ if(WIN32)
     # include path that "platform/xbox_winnt.h" resolves against.
     target_link_libraries(xbox_kernel PUBLIC platform kernel32 bcrypt ws2_32 psapi xbox_nv2a)
 else()
-    # Linux: platform layer (POSIX host primitives) + OpenSSL for crypto.
-    find_package(OpenSSL REQUIRED)
-    target_link_libraries(xbox_kernel PUBLIC platform OpenSSL::Crypto)
+    # Linux / Switch: platform layer (POSIX host primitives). The crypto
+    # (kernel_crypto.c) is portable software SHA-1/RC4/HMAC.
+    target_link_libraries(xbox_kernel PUBLIC platform xbox_nv2a)
 endif()
 
 if(MSVC)

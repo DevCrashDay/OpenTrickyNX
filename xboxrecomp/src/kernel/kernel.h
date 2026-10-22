@@ -995,6 +995,9 @@ VOID    __stdcall xbox_Unknown_42(void);
 #define XBOX_LOG_TRACE   4
 
 void xbox_log(int level, const char* subsystem, const char* fmt, ...);
+/* Commits the kernel log file to its disk (the Switch: a file on the SD card
+ * keeps only what was committed when the system stops the program). */
+void xbox_log_commit(void);
 
 #ifdef _DEBUG
 #define XBOX_TRACE(subsystem, fmt, ...) xbox_log(XBOX_LOG_TRACE, subsystem, fmt, ##__VA_ARGS__)

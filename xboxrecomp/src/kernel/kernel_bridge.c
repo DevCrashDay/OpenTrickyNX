@@ -26,9 +26,12 @@
  */
 
 #include "xbox_perf.h"
+#if defined(_WIN32)
 #include <xmmintrin.h>
+#endif
 #include "kernel.h"
 #include "xbox_memory_layout.h"
+#include "xbox_compact_layout.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <float.h>
@@ -45,9 +48,13 @@ extern void nv2a_live_pb_capture(uint8_t *mem_base);
  * exactly, __thread included -- each genuine Xbox worker thread
  * gets its own register state; g_xbox_mem_offset is NOT thread-local, all
  * threads legitimately share the same Xbox address space mapping). */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else CPU registers: xbox_guest_regs.h */
 extern __thread uint32_t g_eax, g_ecx, g_edx, g_esp;
 extern __thread uint32_t g_ebx, g_esi, g_edi;
+#endif
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 extern __thread uint32_t g_seh_ebp;
+#endif
 extern ptrdiff_t g_xbox_mem_offset;
 
 /* Dispatch table lookup (for function pointer args) */
@@ -478,6 +485,11 @@ static volatile LONG g_thread_call_count = 0;
 #define MAX_NESTED_THREAD_CALLS 16
 static __thread jmp_buf g_thread_terminate_jmp[MAX_NESTED_THREAD_CALLS];
 static __thread int g_thread_terminate_depth = 0;
+#ifdef XBOX_GUEST_REGS_IN_CPU
+/* longjmp puts the CPU registers back as setjmp found them; the guest
+ * registers (w19-w25, w27: xbox_guest_regs.h) keep their values through this. */
+static __thread uint32_t t_terminate_regs[8];
+#endif
 
 /*
  * Call a thread start routine with termination support: returns 1 if the
@@ -497,6 +509,11 @@ static int run_thread_start_routine(recomp_func_t fn)
         fn();
         terminated = 0;
     } else {
+#ifdef XBOX_GUEST_REGS_IN_CPU
+        g_eax = t_terminate_regs[0]; g_ecx = t_terminate_regs[1]; g_edx = t_terminate_regs[2];
+        g_ebx = t_terminate_regs[3]; g_esi = t_terminate_regs[4]; g_edi = t_terminate_regs[5];
+        g_esp = t_terminate_regs[6]; g_fp_top = (int)t_terminate_regs[7];
+#endif
         terminated = 1;
     }
     g_thread_terminate_depth--;
@@ -831,9 +848,11 @@ uint32_t g_xbox_fake_hdr_va = XBOX_FAKE_KERNEL_HEADER_VA;
 
 /* Operands of a comparison that has to cross a function split -- see the
  * SPLIT_* macros in recomp_types.h for why the flags themselves cannot. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread uint32_t g_cmp_a = 0;
 __thread uint32_t g_cmp_b = 0;
 __thread int      g_cmp_test = 0;
+#endif
 
 
 /* ── MmFreeContiguousMemory (ordinal 171) ─────────────────
@@ -1438,6 +1457,11 @@ static void bridge_PsTerminateSystemThread(void)
     g_eax = exit_status;
 
     if (g_thread_terminate_depth > 0) {
+#ifdef XBOX_GUEST_REGS_IN_CPU
+        t_terminate_regs[0] = g_eax; t_terminate_regs[1] = g_ecx; t_terminate_regs[2] = g_edx;
+        t_terminate_regs[3] = g_ebx; t_terminate_regs[4] = g_esi; t_terminate_regs[5] = g_edi;
+        t_terminate_regs[6] = g_esp; t_terminate_regs[7] = (uint32_t)g_fp_top;
+#endif
         longjmp(g_thread_terminate_jmp[g_thread_terminate_depth - 1], 1);
         /* unreachable */
     }
@@ -3717,6 +3741,10 @@ static void bridge_MmClaimGpuInstanceMemory(void)     /* 168, 2 args */
     PVOID p = xbox_MmClaimGpuInstanceMemory(
         STACK_ARG(0), (PULONG)XBOX_TO_NATIVE(STACK_ARG(1)));
     g_eax = p ? (uint32_t)((uintptr_t)p - g_xbox_mem_offset) : 0u;
+#if XBOX_COMPACT_LAYOUT
+    /* The block sits in the aperture slot after RAM; report its real VA. */
+    if (p) g_eax = xbox_compact_unfold(g_eax);
+#endif
 }
 
 static void bridge_MmLockUnlockPhysicalPage(void)     /* 176, 2 args */
@@ -4327,6 +4355,8 @@ static void xbox_apply_tls_index_once(void)
 static volatile LONG g_trap_nan_armed = 0;
 static __thread int  t_trap_nan_on = 0;
 
+#if defined(_WIN32)
+
 /* Report an invalid-operation trap with a native backtrace, then mask the
  * exception again in the faulting context and retry: the operation produces
  * its NaN as it would have, and the run continues to the next report. */
@@ -4365,13 +4395,21 @@ static void trap_nan_check_path(const char *path)
         fflush(stderr);
     }
 }
+#else
+/* x86 MXCSR trapping through a vectored handler: Windows only. */
+static void trap_nan_check_path(const char *path) { (void)path; }
+#endif
 
 static void kernel_thunk_dispatch(void)
 {
+#if defined(_WIN32)
     if (g_trap_nan_armed && !t_trap_nan_on) {
         t_trap_nan_on = 1;
         _mm_setcsr(_mm_getcsr() & ~0x0080u);   /* unmask invalid (IM) */
     }
+#else
+    (void)t_trap_nan_on;
+#endif
     xbox_apply_tls_index_once();
     /* Sample the push buffer on the guest's own thread while the translator is
      * still coming up. The 1 ms pump cannot see D3D init -- the title emits its
@@ -4482,7 +4520,9 @@ static void kernel_thunk_dispatch(void)
                  * Real code keeps it inside an eight-register window; unbounded
                  * drift means some translation pushes without popping, which the
                  * old per-function stack used to hide by resetting each call. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
                 extern __thread int g_fp_top;
+#endif
                 static int first = 1, base_top = 0;
                 if (first) { first = 0; base_top = g_fp_top; }
                 fprintf(stderr, "  [KERNEL] x87 top = %d (drift %+d since first report)\n",

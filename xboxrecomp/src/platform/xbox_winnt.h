@@ -156,8 +156,17 @@ typedef void              *HWND, *HDC, *HBITMAP, *HICON, *HMENU, *HCURSOR;
 typedef void              *PCONTEXT;
 
 /* Xbox/UTF-16 wide char is 16-bit, unlike the 32-bit Linux wchar_t. */
+#if defined(XBOX_HOST_WCHAR)
+/* Host-side code written against <windows.h> (a game port's settings,
+ * paths and UI) uses WCHAR with L"..." literals and the C library's wcs*
+ * functions, so for it WCHAR is the host's wchar_t. Such code does not hand
+ * WCHAR to the Xbox kernel. */
+#include <wchar.h>
+typedef wchar_t            WCHAR, *PWCHAR, *LPWSTR, *PWSTR;
+#else
 typedef uint16_t           WCHAR, *PWCHAR, *LPWSTR, *PWSTR;
-typedef const uint16_t    *LPCWSTR, *PCWSTR;
+#endif
+typedef const WCHAR       *LPCWSTR, *PCWSTR;
 
 /* Narrow string pointers */
 typedef char              *LPSTR,  *PSTR;

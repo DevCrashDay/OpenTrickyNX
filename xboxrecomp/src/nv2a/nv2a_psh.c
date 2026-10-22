@@ -1,5 +1,5 @@
 /*
- * NV2A register combiners -> HLSL. See nv2a_psh.h.
+ * NV2A register combiners -> HLSL (and GLSL 330 for the GL backend). See nv2a_psh.h.
  *
  * Ported from xemu's hw/xbox/nv2a/pgraph/glsl/psh.c (LGPL-2.1+, espes and the
  * xemu project): the same register decoding, input and output mappings,
@@ -17,6 +17,10 @@
 
 typedef struct { char *buf; int size, len, overflow; } SB;
 
+/* Output language of the current nv2a_psh_generate* call: 0 HLSL (the
+ * D3D11 backend; its text is unchanged), 1 GLSL 330 core (the GL backend). */
+static int g_glsl;
+
 static void sbf(SB *s, const char *fmt, ...)
 {
     va_list ap;
@@ -27,6 +31,14 @@ static void sbf(SB *s, const char *fmt, ...)
     va_end(ap);
     if (n < 0 || n >= s->size - s->len) { s->overflow = 1; return; }
     s->len += n;
+}
+
+/* "texN.Sample(smpN, " (HLSL) or "texture(texN, " (GLSL). */
+static const char *smp(int i)
+{
+    static char b[4][32];
+    snprintf(b[i & 3], sizeof b[0], g_glsl ? "texture(tex%d, " : "tex%d.Sample(smp%d, ", i, i);
+    return b[i & 3];
 }
 
 enum {
@@ -147,7 +159,7 @@ static void stage_code(Ps *ps, const In *in, const Out *o, int is_alpha, SB *cod
     static char mux[20500], muxm[20600];
     char abd[5000], cdd[5000], msd[5000];
     const char *wm = is_alpha ? "a" : "rgb";
-    const char *cast = is_alpha ? "" : "(float3)";
+    const char *cast = is_alpha ? "" : (g_glsl ? "float3" : "(float3)");
 
     get_input_var(ps, in[0], is_alpha, a, sizeof a);
     get_input_var(ps, in[1], is_alpha, b, sizeof b);
@@ -168,7 +180,9 @@ static void stage_code(Ps *ps, const In *in, const Out *o, int is_alpha, SB *cod
             snprintf(mux, sizeof mux, "(%s + %s)", ab, cd);
         else
             snprintf(mux, sizeof mux, "((%s) ? %s(%s) : %s(%s))",
-                     (ps->flags & 0x1) ? "r0.a >= 0.5" : "(((uint)(r0.a * 255.0)) & 1u) == 1u",
+                     (ps->flags & 0x1) ? "r0.a >= 0.5" :
+                     (g_glsl ? "((uint(r0.a * 255.0)) & 1u) == 1u"
+                             : "(((uint)(r0.a * 255.0)) & 1u) == 1u"),
                      cast, cd, cast, ab);
         get_output(mux, o->mapping, muxm, sizeof muxm);
         sbf(code, "mux_sum.%s = clamp(%s(%s), -1.0, 1.0);\n", wm, cast, muxm);
@@ -233,6 +247,60 @@ static const char preamble[] =
     "    return uv;\n"
     "}\n";
 
+/* GLSL 330 core counterpart of `preamble`: the PshConsts std140 block has
+ * the same layout as Nv2aPshConsts (every member a vec4 or vec4 array). The
+ * vertex shader's NvVary block feeds `i`; the window-clip test reads
+ * gl_FragCoord with an upper-left origin, i.e. SV_Position. */
+static const char preamble_glsl[] =
+    "#version 330 core\n"
+    "#define float4 vec4\n"
+    "#define float3 vec3\n"
+    "#define float2 vec2\n"
+    "#define saturate(x) clamp((x), 0.0, 1.0)\n"
+    "#define lerp mix\n"
+    "layout(origin_upper_left) in vec4 gl_FragCoord;\n"
+    "layout(std140) uniform PshConsts {\n"
+    "    float4 c0[9];\n"
+    "    float4 c1[9];\n"
+    "    float4 fog_color;\n"
+    "    float4 tex_size[4];\n"
+    "    float4 alpha_ref;\n"
+    "    float4 clip_region[8];\n"
+    "};\n"
+    "in NvVary {\n"
+    "    float4 d0;\n"
+    "    float4 d1;\n"
+    "    float  fog;\n"
+    "    float4 t0;\n"
+    "    float4 t1;\n"
+    "    float4 t2;\n"
+    "    float4 t3;\n"
+    "} i;\n"
+    "layout(location = 0) out vec4 nv_out;\n"
+    "float sign1(float x) { x *= 255.0; return (x - 128.0) / 127.0; }\n"
+    "float sign2(float x) { x *= 255.0; return x >= 128.0 ? (x - 255.5) / 127.5 : (x + 0.5) / 127.5; }\n"
+    "float sign3(float x) { x *= 255.0; return x >= 128.0 ? (x - 256.0) / 127.0 : x / 127.0; }\n"
+    "float3 dotmap_zero_to_one(float4 c) { return c.rgb; }\n"
+    "float3 dotmap_minus1_to_1_d3d(float4 c) { return float3(sign1(c.r), sign1(c.g), sign1(c.b)); }\n"
+    "float3 dotmap_minus1_to_1_gl(float4 c) { return float3(sign2(c.r), sign2(c.g), sign2(c.b)); }\n"
+    "float3 dotmap_minus1_to_1(float4 c) { return float3(sign3(c.r), sign3(c.g), sign3(c.b)); }\n"
+    "float3 dotmap_hilo_1(float4 c) {\n"
+    "    uint hi = (uint(c.a * 255.0) << 8) | uint(c.r * 255.0);\n"
+    "    uint lo = (uint(c.g * 255.0) << 8) | uint(c.b * 255.0);\n"
+    "    return float3(float(hi) / 65535.0, float(lo) / 65535.0, 1.0);\n"
+    "}\n"
+    "float3 dotmap_hilo_hemisphere_d3d(float4 c) { return c.rgb; }\n"
+    "float3 dotmap_hilo_hemisphere_gl(float4 c) { return c.rgb; }\n"
+    "float3 dotmap_hilo_hemisphere(float4 c) { return c.rgb; }\n"
+    "float2 remapCubeTo2D(float3 t) {\n"
+    "    float3 a = abs(t);\n"
+    "    float2 uv;\n"
+    "    if (a.x > a.y && a.x > a.z) uv = (t.x > 0.0 ? float2(-t.z, t.y) : float2(t.z, t.y)) / a.x;\n"
+    "    else if (a.y > a.x && a.y > a.z) uv = (t.y > 0.0 ? float2(t.x, -t.z) : float2(t.x, t.z)) / a.y;\n"
+    "    else uv = (t.z > 0.0 ? float2(t.x, t.y) : float2(-t.x, t.y)) / a.z;\n"
+    "    return uv;\n"
+    "}\n";
+
 /* Normalised 2D coordinate expression for stage i from `coord` (a float2
  * expression): rect (linear) textures are addressed in texels. */
 static void norm2(const Ps *ps, int i, const char *coord, char *out, size_t n)
@@ -261,9 +329,13 @@ static void tex_code(Ps *ps, int i, SB *decl, SB *v)
     const char *dm = dotmap_funcs[ps->dot_map[i] & 7];
     char co[256], nrm[320];
 
-    if (stage_samples(mode))
-        sbf(decl, "Texture2D tex%d : register(t%d);\nSamplerState smp%d : register(s%d);\n",
-            i, i, i, i);
+    if (stage_samples(mode)) {
+        if (g_glsl)
+            sbf(decl, "uniform sampler2D tex%d;\n", i);
+        else
+            sbf(decl, "Texture2D tex%d : register(t%d);\nSamplerState smp%d : register(s%d);\n",
+                i, i, i, i);
+    }
     switch (mode) {
     case MODE_NONE:
         sbf(v, "float4 t%d = float4(0.0, 0.0, 0.0, 1.0);\n", i);
@@ -273,15 +345,15 @@ static void tex_code(Ps *ps, int i, SB *decl, SB *v)
         if (st->tex_cube[i]) {
             snprintf(co, sizeof co, "remapCubeTo2D(float3(1.0, pT%d.y / pT%d.w, -pT%d.x / pT%d.w))",
                      i, i, i, i);
-            sbf(v, "float4 t%d = tex%d.Sample(smp%d, %s);\n", i, i, i, co);
+            sbf(v, "float4 t%d = %s%s);\n", i, smp(i), co);
         } else {
             snprintf(co, sizeof co, "pT%d.xy", i);
             norm2(ps, i, co, nrm, sizeof nrm);
-            sbf(v, "float4 t%d = tex%d.Sample(smp%d, %s / pT%d.w);\n", i, i, i, nrm, i);
+            sbf(v, "float4 t%d = %s%s / pT%d.w);\n", i, smp(i), nrm, i);
         }
         break;
     case MODE_CUBEMAP:
-        sbf(v, "float4 t%d = tex%d.Sample(smp%d, remapCubeTo2D(pT%d.xyz));\n", i, i, i, i);
+        sbf(v, "float4 t%d = %sremapCubeTo2D(pT%d.xyz));\n", i, smp(i), i);
         break;
     case MODE_PASSTHRU:
         sbf(v, "float4 t%d = pT%d;\n", i, i);
@@ -295,13 +367,13 @@ static void tex_code(Ps *ps, int i, SB *decl, SB *v)
     case MODE_BUMPENVMAP_LUM:            /* bump matrix not tracked yet: unperturbed */
         snprintf(co, sizeof co, "pT%d.xy", i);
         norm2(ps, i, co, nrm, sizeof nrm);
-        sbf(v, "float4 t%d = tex%d.Sample(smp%d, %s);\n", i, i, i, nrm);
+        sbf(v, "float4 t%d = %s%s);\n", i, smp(i), nrm);
         break;
     case MODE_DOT_ST:
         sbf(v, "float dot%d = dot(pT%d.xyz, %s(t%d));\n", i, i, dm, in);
         snprintf(co, sizeof co, "float2(dot%d, dot%d)", i - 1, i);
         norm2(ps, i, co, nrm, sizeof nrm);
-        sbf(v, "float4 t%d = tex%d.Sample(smp%d, %s);\n", i, i, i, nrm);
+        sbf(v, "float4 t%d = %s%s);\n", i, smp(i), nrm);
         break;
     case MODE_DOT_ZW:
     case MODE_DOTPRODUCT:
@@ -312,8 +384,8 @@ static void tex_code(Ps *ps, int i, SB *decl, SB *v)
         sbf(v, "float dot%d = dot(pT%d.xyz, %s(t%d));\n", i, i, dm, in);
         sbf(v, "float dot%d_n = dot(pT%d.xyz, %s(t%d));\n", i, i + 1,
             dotmap_funcs[ps->dot_map[(i + 1) & 3] & 7], ps->input_tex[(i + 1) & 3] & 3);
-        sbf(v, "float4 t%d = tex%d.Sample(smp%d, remapCubeTo2D(float3(dot%d, dot%d, dot%d_n)));\n",
-            i, i, i, i - 1, i, i);
+        sbf(v, "float4 t%d = %sremapCubeTo2D(float3(dot%d, dot%d, dot%d_n)));\n",
+            i, smp(i), i - 1, i, i);
         break;
     case MODE_DOT_RFLCT_SPEC:
         sbf(v, "float dot%d = dot(pT%d.xyz, %s(t%d));\n", i, i, dm, in);
@@ -321,19 +393,19 @@ static void tex_code(Ps *ps, int i, SB *decl, SB *v)
         sbf(v, "float3 e_%d = float3(pT%d.w, pT%d.w, pT%d.w);\n", i, i - 2, i - 1, i);
         sbf(v, "float3 rv_%d = 2.0 * n_%d * dot(n_%d, e_%d) / dot(n_%d, n_%d) - e_%d;\n",
             i, i, i, i, i, i, i);
-        sbf(v, "float4 t%d = tex%d.Sample(smp%d, remapCubeTo2D(rv_%d));\n", i, i, i, i);
+        sbf(v, "float4 t%d = %sremapCubeTo2D(rv_%d));\n", i, smp(i), i);
         break;
     case MODE_DOT_STR_3D:
     case MODE_DOT_STR_CUBE:
         sbf(v, "float dot%d = dot(pT%d.xyz, %s(t%d));\n", i, i, dm, in);
-        sbf(v, "float4 t%d = tex%d.Sample(smp%d, remapCubeTo2D(float3(dot%d, dot%d, dot%d)));\n",
-            i, i, i, i - 2, i - 1, i);
+        sbf(v, "float4 t%d = %sremapCubeTo2D(float3(dot%d, dot%d, dot%d)));\n",
+            i, smp(i), i - 2, i - 1, i);
         break;
     case MODE_DPNDNT_AR:
-        sbf(v, "float4 t%d = tex%d.Sample(smp%d, t%d.ar);\n", i, i, i, in);
+        sbf(v, "float4 t%d = %st%d.ar);\n", i, smp(i), in);
         break;
     case MODE_DPNDNT_GB:
-        sbf(v, "float4 t%d = tex%d.Sample(smp%d, t%d.gb);\n", i, i, i, in);
+        sbf(v, "float4 t%d = %st%d.gb);\n", i, smp(i), in);
         break;
     default:                             /* BRDF, DOT_RFLCT_SPEC_CONST: unimplemented in xemu too */
         sbf(v, "float4 t%d = float4(0.0, 0.0, 0.0, 0.0);\n", i);
@@ -355,7 +427,7 @@ uint64_t nv2a_psh_key(const Nv2aPshState *st)
     return h;
 }
 
-int nv2a_psh_generate(const Nv2aPshState *st, char *buf, int size)
+static int generate(const Nv2aPshState *st, char *buf, int size)
 {
     static Ps ps;
     static char declbuf[4096], varsbuf[16384], codebuf[65536], asgbuf[16384];
@@ -446,7 +518,8 @@ int nv2a_psh_generate(const Nv2aPshState *st, char *buf, int size)
             get_input_var(&ps, ps.fin[3], 0, d, sizeof d);
             get_input_var(&ps, ps.fin[6], 1, g, sizeof g);
             sbf(&code, "// final combiner\nfloat4 fragColor;\n");
-            sbf(&code, "fragColor.rgb = %s + lerp((float3)(%s), (float3)(%s), (float3)(%s));\n",
+            sbf(&code, g_glsl ? "fragColor.rgb = %s + lerp(float3(%s), float3(%s), float3(%s));\n"
+                              : "fragColor.rgb = %s + lerp((float3)(%s), (float3)(%s), (float3)(%s));\n",
                 d, c, b, a);
             sbf(&code, "fragColor.a = %s;\n", g);
         } else {
@@ -473,13 +546,19 @@ int nv2a_psh_generate(const Nv2aPshState *st, char *buf, int size)
         if (st->alpha_func == 0)
             sbf(&code, "discard;\n");
         else
-            sbf(&code, "if (!((int)round(saturate(fragColor.a) * 255.0) %s (int)alpha_ref.x)) discard;\n",
+            sbf(&code, g_glsl ? "if (!(int(round(saturate(fragColor.a) * 255.0)) %s int(alpha_ref.x))) discard;\n"
+                              : "if (!((int)round(saturate(fragColor.a) * 255.0) %s (int)alpha_ref.x)) discard;\n",
                 ops[st->alpha_func & 7]);
     }
 
-    sbf(&out, "%s%s", preamble, declbuf);
-    sbf(&out, "float4 main(PSIn i) : SV_TARGET {\n");
-    if (st->window_clip) {
+    sbf(&out, "%s%s", g_glsl ? preamble_glsl : preamble, declbuf);
+    sbf(&out, g_glsl ? "void main() {\n" : "float4 main(PSIn i) : SV_TARGET {\n");
+    if (st->window_clip && g_glsl) {
+        sbf(&out, "{ float2 wc = gl_FragCoord.xy - 0.5; bool hit = false;\n"
+                  "  for (int k = 0; k < 8; k++)\n"
+                  "    if (all(greaterThanEqual(wc, clip_region[k].xy)) && all(lessThan(wc, clip_region[k].zw))) hit = true;\n"
+                  "  if (%shit) discard; }\n", st->window_clip == 2 ? "" : "!");
+    } else if (st->window_clip) {
         /* Window clip, as xemu's psh.c: up to eight rectangles in surface
          * pixels. Inclusive keeps a pixel inside any of them, exclusive
          * drops it. The 3D menus clip their scene to the inside of the UI
@@ -489,8 +568,24 @@ int nv2a_psh_generate(const Nv2aPshState *st, char *buf, int size)
                   "    if (all(wc >= clip_region[k].xy) && all(wc < clip_region[k].zw)) hit = true;\n"
                   "  if (%shit) discard; }\n", st->window_clip == 2 ? "" : "!");
     }
-    sbf(&out, "%s%sreturn fragColor;\n}\n", varsbuf, codebuf);
+    sbf(&out, g_glsl ? "%s%snv_out = fragColor;\n}\n" : "%s%sreturn fragColor;\n}\n",
+        varsbuf, codebuf);
     if (out.overflow || decl.overflow || vars.overflow || code.overflow)
         return -1;
     return out.len;
+}
+
+int nv2a_psh_generate(const Nv2aPshState *st, char *buf, int size)
+{
+    g_glsl = 0;
+    return generate(st, buf, size);
+}
+
+int nv2a_psh_generate_glsl(const Nv2aPshState *st, char *buf, int size)
+{
+    int r;
+    g_glsl = 1;
+    r = generate(st, buf, size);
+    g_glsl = 0;
+    return r;
 }

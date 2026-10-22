@@ -50,8 +50,10 @@
 extern void (*perf_lookup(unsigned int xbox_va))(void);
 
 /* Per-thread SSE / MMX register files (see recomp_types.h). */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread recomp_xmm_t g_xmm[8];
 __thread uint64_t g_mm[8];
+#endif
 
 
 
@@ -78,7 +80,9 @@ typedef void (*recomp_func_t)(void);
 
 /* ── Register state (defined in xbox_memory_layout.c) ──────── */
 
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else CPU registers: xbox_guest_regs.h */
 extern __thread uint32_t g_eax;
+#endif
 extern ptrdiff_t g_xbox_mem_offset;
 
 /* ── Manual function overrides ─────────────────────────────── */
@@ -305,8 +309,15 @@ recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
  * XBOX_FIX_ICALL_CACHE=0: no cache (the old lookup on every call). Off until
  * the title starts (recomp_icall_cache_start), so nothing resolved during
  * start-up, before the hook flags are set, can stay cached. */
+#ifdef XBOX_GUEST_REGS_IN_CPU
+/* Called by guest code only, so x26 holds this thread's xbox_gtls: one load
+ * instead of a call for the thread pointer on every indirect call. */
+#define ICALL_CACHE_SIZE XBOX_GTLS_ICALL_N
+#define t_icall_cache (g_xbox_gtls->icall)
+#else
 #define ICALL_CACHE_SIZE 2048u
 static __thread struct { uint32_t va; recomp_func_t fn; } t_icall_cache[ICALL_CACHE_SIZE];
+#endif
 static int g_icall_cache_on;            /* 0 until recomp_icall_cache_start() */
 
 /* Called by main just before the title's entry point: every hook decision

@@ -21,6 +21,9 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <time.h>
+#if defined(__SWITCH__)
+#include <unistd.h>
+#endif
 
 /* ============================================================================
  * Thunk Table Storage
@@ -77,6 +80,18 @@ void xbox_log(int level, const char* subsystem, const char* fmt, ...)
 
     if (g_log_cs_init)
         LeaveCriticalSection(&g_log_cs);
+}
+
+void xbox_log_commit(void)
+{
+#if defined(__SWITCH__)
+    if (g_log_cs_init)
+        EnterCriticalSection(&g_log_cs);
+    if (g_log_file)
+        fsync(fileno(g_log_file));
+    if (g_log_cs_init)
+        LeaveCriticalSection(&g_log_cs);
+#endif
 }
 
 /* ============================================================================

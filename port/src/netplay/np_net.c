@@ -273,7 +273,7 @@ static DWORD WINAPI nn_thread(LPVOID unused)
         struct timeval tv = { 0, 50000 };
         double now;
         FD_ZERO(&rs); FD_SET(s_sock, &rs);
-        if (select(0, &rs, 0, 0, &tv) > 0) {
+        if (select((int)s_sock + 1, &rs, 0, 0, &tv) > 0) {
             struct sockaddr_in from;
             int fl = sizeof from, n, rlen;
             n = recvfrom(s_sock, (char *)buf, sizeof buf, 0, (struct sockaddr *)&from, &fl);

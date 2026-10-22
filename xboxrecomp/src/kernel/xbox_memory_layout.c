@@ -15,7 +15,19 @@
  */
 
 #include "xbox_memory_layout.h"
+#include "xbox_compact_layout.h"
+_Static_assert(XBOX_COMPACT_RAM_SIZE == XBOX_TOTAL_RAM,
+               "xbox_compact_layout.h and recomp_types.h fold modulo XBOX_TOTAL_RAM");
 #include "kernel.h"
+
+/* Host pointer for a hardware-aperture guest VA from the pump's mem_base
+ * (the base offset). The compact layout folds the aperture onto the slot
+ * after RAM (xbox_compact_layout.h); Windows maps it at its own VA. */
+#if XBOX_COMPACT_LAYOUT
+#define XBOX_HW_PTR(mem_base, va) ((uint8_t *)xbox_host_ptr((uint32_t)(va)))
+#else
+#define XBOX_HW_PTR(mem_base, va) ((mem_base) + (va))
+#endif
 #include <stdio.h>
 #include <string.h>
 
@@ -160,7 +172,9 @@ static void *g_gpu_mmio_base = NULL;   /* fake NV2A MMIO aperture, Xbox VA 0xFD0
  * g_xbox_tib_va is read by xbox_resolve_uncached_alias on every guest memory
  * access below 0x100, so it lives here beside the other per-thread register
  * state and is declared in recomp_types.h. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread uint32_t g_xbox_tib_va = 0;
+#endif
 
 static volatile LONG g_tib_next_slot = 0;
 
@@ -231,6 +245,16 @@ static volatile LONG    g_pfifo_pump_running = 0;
  * whether the pump still runs. One increment per turn. */
 volatile uint32_t       g_pump_beats = 0;
 
+/* A guest address the pump follows, as a host pointer. Pointers the title
+ * publishes can name the hardware aperture (the fence readback sits at
+ * 0xFD800000 on one channel), which in the compact layout is not at
+ * mem_base + VA: fold it the way every other guest access is folded. */
+#if XBOX_COMPACT_LAYOUT
+#define PUMP_PTR(mem_base, va) ((uint8_t *)xbox_host_ptr((uint32_t)(va)))
+#else
+#define PUMP_PTR(mem_base, va) ((mem_base) + (va))
+#endif
+
 /*
  * Sync one channel's fence readback to whatever it's being asked to reach.
  *
@@ -250,9 +274,9 @@ volatile uint32_t       g_pump_beats = 0;
  */
 static void xbox_pfifo_sync_fence(uint8_t *mem_base, uint32_t context)
 {
-    uint32_t fence_target0  = *(volatile uint32_t *)(mem_base + context);
-    uint32_t fence_target10 = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_FENCE_TARGET_OFF);
-    uint32_t fence_struct   = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_FENCE_STRUCT_OFF);
+    uint32_t fence_target0  = *(volatile uint32_t *)PUMP_PTR(mem_base, context);
+    uint32_t fence_target10 = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_FENCE_TARGET_OFF);
+    uint32_t fence_struct   = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_FENCE_STRUCT_OFF);
     if (fence_struct) {
         /* Two call sites wait on this same fence-struct readback against
          * two different target fields -- context+0x10 (sub_0016F220) and
@@ -261,7 +285,7 @@ static void xbox_pfifo_sync_fence(uint8_t *mem_base, uint32_t context)
          * its own target satisfied on the next tick regardless of which
          * write happened last. */
         volatile uint32_t *current =
-            (volatile uint32_t *)(mem_base + fence_struct + XBOX_GPU_FENCE_CURRENT_OFF);
+            (volatile uint32_t *)PUMP_PTR(mem_base, fence_struct + XBOX_GPU_FENCE_CURRENT_OFF);
         *current = fence_target10;
         *current = fence_target0;
     }
@@ -294,17 +318,17 @@ static void xbox_aci_tick(uint8_t *mem_base)
     for (ch = 0; ch < XBOX_ACI_NABM_CHANNELS; ch++) {
         uint32_t chan = XBOX_ACI_BASE_VA + XBOX_ACI_NABM_OFF +
                         (uint32_t)ch * XBOX_ACI_CHANNEL_STRIDE;
-        volatile uint8_t *cr = (volatile uint8_t *)(mem_base + chan + 0x0B);
+        volatile uint8_t *cr = (volatile uint8_t *)XBOX_HW_PTR(mem_base, chan + 0x0B);
 
         if (!(*cr & XBOX_ACI_CR_RR))
             continue;
 
-        *(volatile uint32_t *)(mem_base + chan + 0x00) = 0;              /* BDBAR */
-        *(volatile uint8_t  *)(mem_base + chan + 0x04) = 0;              /* CIV   */
-        *(volatile uint8_t  *)(mem_base + chan + 0x05) = 0;              /* LVI   */
-        *(volatile uint16_t *)(mem_base + chan + 0x08) = 0;              /* PICB  */
-        *(volatile uint8_t  *)(mem_base + chan + 0x0A) = 0;              /* PIV   */
-        *(volatile uint8_t  *)(mem_base + chan + 0x06) = XBOX_ACI_SR_DCH;
+        *(volatile uint32_t *)XBOX_HW_PTR(mem_base, chan + 0x00) = 0;              /* BDBAR */
+        *(volatile uint8_t  *)XBOX_HW_PTR(mem_base, chan + 0x04) = 0;              /* CIV   */
+        *(volatile uint8_t  *)XBOX_HW_PTR(mem_base, chan + 0x05) = 0;              /* LVI   */
+        *(volatile uint16_t *)XBOX_HW_PTR(mem_base, chan + 0x08) = 0;              /* PICB  */
+        *(volatile uint8_t  *)XBOX_HW_PTR(mem_base, chan + 0x0A) = 0;              /* PIV   */
+        *(volatile uint8_t  *)XBOX_HW_PTR(mem_base, chan + 0x06) = XBOX_ACI_SR_DCH;
         *cr = (uint8_t)(*cr & XBOX_ACI_CR_DONT_CLEAR);
     }
 }
@@ -379,7 +403,11 @@ static DWORD WINAPI xbox_vblank_thread(LPVOID param)
      * without spinning; older systems fall back to a plain timer. */
     timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002, TIMER_ALL_ACCESS);
     if (!timer) timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
+#if defined(__SWITCH__)
+    xbox_switch_host_priority(THREAD_PRIORITY_TIME_CRITICAL);
+#else
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+#endif
     QueryPerformanceCounter(&t0);
 
     while (g_pfifo_pump_running) {
@@ -435,6 +463,9 @@ static DWORD WINAPI xbox_pfifo_pump_thread(LPVOID param)
     uint32_t last_put = 0, seen_put = 0;
     int idle = 0;
 
+#if defined(__SWITCH__)
+    xbox_switch_thread_core(1);         /* the renderer: a core of its own */
+#endif
     while (g_pfifo_pump_running) {
         g_pump_beats++;
         /* Guest .text must not change after load. A jump table at Xbox VA
@@ -446,7 +477,7 @@ static DWORD WINAPI xbox_pfifo_pump_thread(LPVOID param)
          * moment it happens instead of only the consequence. */
         {
             static uint32_t jt_last = 0xFFFFFFFFu;
-            uint32_t jt_now = *(volatile uint32_t *)(mem_base + 0x000FB030u);
+            uint32_t jt_now = *(volatile uint32_t *)PUMP_PTR(mem_base, 0x000FB030u);
             if (jt_last == 0xFFFFFFFFu) jt_last = jt_now;
             if (jt_now != jt_last) {
                 fprintf(stderr, "  [TEXT] .text[0x000FB030] changed 0x%08X -> 0x%08X\n", jt_last, jt_now);
@@ -462,13 +493,13 @@ static DWORD WINAPI xbox_pfifo_pump_thread(LPVOID param)
 
         xbox_aci_tick(mem_base);
 
-        volatile uint32_t *kick = (volatile uint32_t *)(mem_base + XBOX_PFIFO_KICK_VA);
+        volatile uint32_t *kick = (volatile uint32_t *)XBOX_HW_PTR(mem_base, XBOX_PFIFO_KICK_VA);
         if (*kick & XBOX_PFIFO_BUSY_BIT) {
             *kick &= ~XBOX_PFIFO_BUSY_BIT;
         }
 
         {
-            volatile uint32_t *ready = (volatile uint32_t *)(mem_base + XBOX_PGRAPH_READY_VA);
+            volatile uint32_t *ready = (volatile uint32_t *)XBOX_HW_PTR(mem_base, XBOX_PGRAPH_READY_VA);
             *ready ^= XBOX_PGRAPH_READY_BIT;
         }
 
@@ -504,19 +535,19 @@ static DWORD WINAPI xbox_pfifo_pump_thread(LPVOID param)
                 const char *e = getenv("XBOX_PFIFO_ACK_LATE");
                 ack_early = (e && e[0] == '0');
             }
-            context = *(volatile uint32_t *)(mem_base + XBOX_GPU_CONTEXT_PTR_VA);
+            context = *(volatile uint32_t *)PUMP_PTR(mem_base, XBOX_GPU_CONTEXT_PTR_VA);
             if (context && !pfifo_addr_ok(context, XBOX_GPU_CTX_FRAME_CONSUMER_OFF + 4)) {
                 pfifo_bad_ptr("GPU context pointer", context);
                 context = 0;
             }
             if (context) {
-                put      = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_PUT_OFF);
+                put      = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_PUT_OFF);
                 seen_put = put;
-                get_va   = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_GET_PTR_OFF);
-                producer = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_FRAME_PRODUCER_OFF);
-                ft0      = *(volatile uint32_t *)(mem_base + context);
-                ft10     = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_FENCE_TARGET_OFF);
-                fstruct  = *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_FENCE_STRUCT_OFF);
+                get_va   = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_GET_PTR_OFF);
+                producer = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_FRAME_PRODUCER_OFF);
+                ft0      = *(volatile uint32_t *)PUMP_PTR(mem_base, context);
+                ft10     = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_FENCE_TARGET_OFF);
+                fstruct  = *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_FENCE_STRUCT_OFF);
                 if (get_va && !pfifo_addr_ok(get_va, 4)) {
                     pfifo_bad_ptr("GPU GET pointer", get_va);
                     get_va = 0;
@@ -531,18 +562,18 @@ static DWORD WINAPI xbox_pfifo_pump_thread(LPVOID param)
 
             if (context) {
                 if (get_va)
-                    *(volatile uint32_t *)(mem_base + get_va) = put;
+                    *(volatile uint32_t *)PUMP_PTR(mem_base, get_va) = put;
                 if (fstruct) {
                     /* Same two targets xbox_pfifo_sync_fence syncs, but the
                      * values sampled before translating. */
                     volatile uint32_t *current =
-                        (volatile uint32_t *)(mem_base + fstruct + XBOX_GPU_FENCE_CURRENT_OFF);
+                        (volatile uint32_t *)PUMP_PTR(mem_base, fstruct + XBOX_GPU_FENCE_CURRENT_OFF);
                     *current = ft10;
                     *current = ft0;
                 }
                 /* Fourth channel: per-frame GPU-ahead throttle (see comment
                  * block above, item 4). */
-                *(volatile uint32_t *)(mem_base + context + XBOX_GPU_CTX_FRAME_CONSUMER_OFF) = producer;
+                *(volatile uint32_t *)PUMP_PTR(mem_base, context + XBOX_GPU_CTX_FRAME_CONSUMER_OFF) = producer;
             }
 
             /* Second known channel: a small literal index, not a heap/global
@@ -901,28 +932,40 @@ ptrdiff_t g_xbox_mem_offset = 0;
  * first place. Safe for threads CreateThread'd after this EXE's own TLS is initialized
  * (the historical DLL-TLS caveat with __thread doesn't apply to a statically
  * linked EXE's own threads). */
+#ifndef XBOX_GUEST_REGS_IN_CPU
 __thread uint32_t g_eax = 0, g_ecx = 0, g_edx = 0, g_esp = 0;
-__thread int g_recomp_cf_in = 0;  /* carry across a lifted function boundary */
 __thread uint32_t g_ebx = 0, g_esi = 0, g_edi = 0;
+#endif /* else CPU registers: xbox_guest_regs.c */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
+__thread int g_recomp_cf_in = 0;  /* carry across a lifted function boundary */
+#endif
 
 /* SEH frame pointer bridge (see recomp_types.h for explanation) -- thread-local for the
  * same reason as the registers above. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread uint32_t g_seh_ebp = 0;
+#endif
 
 /* CRT_ftol_TruncateToInt64's FPU-stack cross-call bridge (see recomp_types.h for the
  * full explanation) -- thread-local for the same reason as the registers above. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread double g_ftol_arg = 0.0;
+#endif
 
 /* Shared FPU stack for the CRT_ftol_TruncateToInt64 fragment chain (see recomp_types.h
  * for the full explanation) -- thread-local for the same reason as the registers above. */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread double g_ftol_fp_stack[8] = {0};
 __thread int g_ftol_fp_top = 0;
+#endif
 
 /* Shadow of real x87 ST(0), mirrored by every generated fp_push (see recomp_types.h). */
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread double g_x87_st0 = 0.0;
 __thread int g_fpu_cmp = 0;
 __thread int g_str_ne = 0;
 __thread uint16_t g_x87_cw = 0x027F;
+#endif
 
 /* XBOX_X87_COMPAT (diagnostic): bit 0 restores the old `fnstsw ax`
  * (AH only), bit 1 the old no-op `fxam`. Read once, lazily. */
@@ -939,8 +982,10 @@ int x87_compat_init(void)
     return g_x87_compat;
 }
 
+#ifndef XBOX_GUEST_REGS_IN_CPU /* else fields of xbox_gtls: xbox_guest_regs.h */
 __thread double g_fp_stack[8];
 __thread int g_fp_top = 0;
+#endif
 
 /* XBOX_X87_RET: how a float-returning call hands ST(0) to its
  * caller -- see x87_ret in recomp_types.h. */
@@ -1088,6 +1133,40 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
      * With file mapping views, we create aliased mappings at 64 MB intervals
      * that all point to the same physical memory.
      */
+#if XBOX_COMPACT_LAYOUT
+    /*
+     * One block holds the guest: RAM, then the 48 MB hardware aperture
+     * (xbox_compact_layout.h). No mirror views -- addresses past RAM fold
+     * back onto it in xbox_resolve_uncached_alias -- and no fixed native
+     * address, so this cannot collide with anything else in the process.
+     */
+    {
+        void *block = NULL;
+#if defined(__SWITCH__)
+        if (!(block = xbox_aligned_alloc(0x1000, XBOX_COMPACT_HOST_SIZE))) block = NULL;
+        if (block) memset(block, 0, XBOX_COMPACT_HOST_SIZE);
+#else
+        block = VirtualAlloc(NULL, XBOX_COMPACT_HOST_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#endif
+        if (!block) {
+            fprintf(stderr, "xbox_MemoryLayoutInit: could not allocate the %zu MB guest block%s\n",
+                    XBOX_COMPACT_HOST_SIZE / (1024 * 1024),
+#if defined(__SWITCH__)
+                    " -- start the game from a title (hold R while opening a game), not from the "
+                    "album: applet mode has too little memory"
+#else
+                    ""
+#endif
+                    );
+            return FALSE;
+        }
+        g_memory_base = block;
+        g_memory_offset = (uintptr_t)g_memory_base - XBOX_MAP_START;
+        fprintf(stderr, "xbox_MemoryLayoutInit: guest block %zu KB at %p (RAM %u KB, hardware "
+                "aperture after it; addresses past RAM fold onto it)\n",
+                XBOX_COMPACT_HOST_SIZE / 1024, g_memory_base, (unsigned)(g_memory_size / 1024));
+    }
+#else
     g_mapping_handle = CreateFileMappingA(
         INVALID_HANDLE_VALUE,   /* page file backed */
         NULL,                   /* default security */
@@ -1282,6 +1361,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
         fprintf(stderr, "xbox_MemoryLayoutInit: mapped %zu KB at 0x%p (offset %+td from Xbox base)\n",
                 g_memory_size / 1024, g_memory_base, g_memory_offset);
     }
+#endif /* XBOX_COMPACT_LAYOUT */
 
     /*
      * Helper macro: convert Xbox VA to actual mapped address.
@@ -1617,6 +1697,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
      * intervals. All views alias the same physical pages, so reads and
      * writes at any mirror address correctly access the base data.
      */
+#if !XBOX_COMPACT_LAYOUT
     {
         /* The GPU MMIO aperture below is mapped at a *fixed* native address,
          * g_memory_base + 0xFD000000 (48 MB) -- it has to be exactly there
@@ -1730,6 +1811,8 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
             xbox_memlayout_check_aliases(gpu_mmio_offset);
     }
 
+#endif /* !XBOX_COMPACT_LAYOUT: no mirror views */
+
     /*
      * The Xbox "uncached" RAM alias at 0x80000000 (real hardware maps the
      * same physical RAM there a second time, cache-bypassed, for
@@ -1769,9 +1852,15 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
      * intent, but reliably.
      */
     {
+#if XBOX_COMPACT_LAYOUT
+        /* Already part of the guest block. */
+        void *gpu_mmio_base = xbox_host_ptr(0xFD000000u);
+        void *gpu_mmio = gpu_mmio_base;
+#else
         void *gpu_mmio_base = (void *)((uintptr_t)g_memory_base + 0xFD000000u);
         void *gpu_mmio = VirtualAlloc(gpu_mmio_base, 0x03000000u,
                                        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#endif
         if (gpu_mmio && gpu_mmio == gpu_mmio_base) {
             uint8_t *gpu_mmio_bytes = (uint8_t *)gpu_mmio;
             g_gpu_mmio_base = gpu_mmio;
@@ -1852,6 +1941,20 @@ void xbox_MemoryLayoutShutdown(void)
         CloseHandle(g_pfifo_pump_thread);
         g_pfifo_pump_thread = NULL;
     }
+#if XBOX_COMPACT_LAYOUT
+    g_gpu_mmio_base = NULL;
+    if (g_memory_base) {
+#if defined(__SWITCH__)
+        free(g_memory_base);
+#else
+        VirtualFree(g_memory_base, XBOX_COMPACT_HOST_SIZE, MEM_RELEASE);
+#endif
+        g_memory_base = NULL;
+        g_memory_size = 0;
+    }
+    fprintf(stderr, "xbox_MemoryLayoutShutdown: released\n");
+    return;
+#endif
     if (g_gpu_mmio_base) {
         VirtualFree(g_gpu_mmio_base, 0, MEM_RELEASE);
         g_gpu_mmio_base = NULL;
