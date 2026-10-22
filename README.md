@@ -16,8 +16,10 @@
 </p>
 
 > [!IMPORTANT]
-> **You need your own game.** No disc image, game code, music or video is distributed, and no ready-made `.nro` ever will be:
-> you build it yourself from a disc image (`.iso` or `.xiso`) of ***SSX Tricky* for the original Xbox, USA release**.
+> **You need your own game.** No disc image, game code, music or video is distributed:
+> you can build it yourself from a disc image (`.iso` or `.xiso`) of ***SSX Tricky* for the original Xbox, USA release**.
+> get yourself a tool that can extract .xiso files and the USA release of ssx tricky.
+> you will need the default.xbe file and the data folder from the disc.
 
 > [!WARNING]
 > **Experimental.** The Switch build compiles and links, but it has not been played through on Switch hardware yet.
