@@ -88,9 +88,6 @@ On **Linux or macOS**:
 The script reads `default.xbe` from your disc image, translates it to C, applies the port's fix-up passes, and compiles
 `dist/switch/opentricky/SSX Tricky.nro`. [docs/switch.md](docs/switch.md) has the details.
 
-> [!CAUTION]
-> Your build contains code translated from your copy of the game. Please don't share it.
-
 ## Install and play
 
 1. Copy `dist/switch/opentricky/` to `sdmc:/switch/` on the SD card.
