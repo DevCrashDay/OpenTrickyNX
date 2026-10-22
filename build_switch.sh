@@ -19,6 +19,10 @@
 #   GLSLANG_DIR  glslang built for the Switch (port/tools/build_glslang_switch.sh;
 #                built into build/glslang-switch on first use when not set)
 #
+# SWITCH_JOBS sets how many files compile at once (default: every core). The
+# translated files take a few GB of memory each; lower it when the build
+# stalls with Docker short of memory, e.g. SWITCH_JOBS=2.
+#
 # SWITCH_OPTS passes CMake options to the build folder, which keeps them for
 # later builds, e.g. SWITCH_OPTS="-DOT_GUEST_REGS=OFF" (docs/switch.md).
 #
@@ -158,7 +162,7 @@ if [ "$NATIVE" = 1 ]; then
     CMAKE="$SWITCH_CMAKE"
     [ -f "$BUILD/CMakeCache.txt" ] || eval "${CONFIGURE/cmake/$CMAKE}"
     [ -z "${SWITCH_OPTS:-}" ] || cmake $SWITCH_OPTS "$BUILD"
-    cmake --build "$BUILD" -j "$(nproc 2>/dev/null || echo 4)"
+    cmake --build "$BUILD" -j "${SWITCH_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 else
     if [ "$ON_WINDOWS" = 1 ]; then
         MOUNT="$(cygpath -m "$ROOT")"; USER_ARGS=()
@@ -171,7 +175,7 @@ else
         set -e
         [ -f $BUILD/CMakeCache.txt ] || ${CONFIGURE/cmake//opt/devkitpro/portlibs/switch/bin/aarch64-none-elf-cmake}
         ${SWITCH_OPTS:+cmake $SWITCH_OPTS $BUILD}
-        cmake --build $BUILD -j \$(nproc)"
+        cmake --build $BUILD -j ${SWITCH_JOBS:-\$(nproc)}"
 fi
 
 echo "== [4/4] dist/switch/opentricky"
