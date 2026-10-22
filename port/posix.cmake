@@ -81,6 +81,7 @@ set(GAME_SOURCES
     src/ps2legend.c
     src/fullfade.c
     src/hud_anchor.c
+    src/fourplayer.c
     src/ticktrace.c
     src/perf_hooks.c
     src/netplay/np_cmdlog.c

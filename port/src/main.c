@@ -102,6 +102,7 @@ void fork_riderlist_note(uint32_t kind, uint32_t race, uint32_t tick, uint32_t r
 #include "fps_cap.h"
 #include "aspect.h"
 #include "drawdist.h"
+#include "fourplayer.h"
 #include "terrain_seams.h"
 #include "ctlscheme.h"
 #include "ps2legend.h"
@@ -1065,6 +1066,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Draw distance (XBOX_DRAW_DISTANCE, or DrawDistance in the
      * .ini through the launcher above). Original by default: no hook. */
     drawdist_init();
+    /* Four-player split screen (OT_FOUR_PLAYER=1, fourplayer.h). Off by
+     * default: every hook passes straight through. */
+    fourplayer_init();
     /* Texture seams between terrain patches (terrain_seams.h): PC options,
      * off by default, and then nothing is hooked. */
     terrain_seams_init();

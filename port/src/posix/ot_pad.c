@@ -101,9 +101,11 @@ static void controller_setup(void)
     HidLaControllerSupportArg arg;
     HidLaControllerSupportResultInfo info;
     Result rc;
+    const char *four = getenv("OT_FOUR_PLAYER");
     hidLaCreateControllerSupportArg(&arg);
     arg.hdr.player_count_min = 1;
-    arg.hdr.player_count_max = 2;
+    /* four with the four-player split screen (fourplayer.h) */
+    arg.hdr.player_count_max = (four && four[0] == '1') ? 4 : 2;
     arg.hdr.enable_take_over_connection = 1;
     arg.hdr.enable_left_justify = 1;
     arg.hdr.enable_permit_joy_dual = 1;

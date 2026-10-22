@@ -92,3 +92,8 @@ XBOX_SHOW_FPS=1
 # 1: every controller slot counts as connected, as before the two-player
 # change (to compare when a controller does not respond).
 #OT_PAD_ALL=0
+# 1: four-player split screen (test). Start a two-player race with computer
+# riders in it; each further connected controller takes over one of them,
+# and the screen splits in four (- and + together: the console's controller
+# screen, for up to four).
+#OT_FOUR_PLAYER=1

@@ -39,6 +39,7 @@
 #include "aspect.h"
 #include "drawdist.h"
 #include "hud_anchor.h"
+#include "fourplayer.h"
 #include "fullfade.h"
 #include "ps2legend.h"
 #include "ctlscheme.h"
@@ -268,6 +269,14 @@ recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
      * original path is untouched (see netplay/np_cmdlog.h). */
     if (g_np_cmdlog_on || g_np_ghost_on || g_np_net_on || g_np_rb_on || g_np_stuck_on) {
         recomp_func_t fn = np_cmdlog_lookup(xbox_va);
+        if (fn) return fn;
+    }
+
+    /* Four-player split screen (OT_FOUR_PLAYER=1, see fourplayer.h) --
+     * after netplay, which takes the level init first. Off, none is
+     * handed out. */
+    if (g_fourplayer) {
+        recomp_func_t fn = fourplayer_lookup(xbox_va);
         if (fn) return fn;
     }
 
