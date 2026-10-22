@@ -9,6 +9,7 @@
 #include <windows.h>
 #include "recomp/recomp_types.h"
 #include "hud_anchor.h"
+#include "fourplayer.h"
 #include "aspect.h"
 
 void sub_000C6730(void);    /* HUD_DrawRaceOverlay (thiscall, ret 20) */
@@ -353,6 +354,8 @@ static uint32_t view_records(void)
 void hook_hud_000D2D80(void)
 {
     uint32_t n0, n1;
+    /* Overlays keep two views: no finish banner in a 3rd / 4th (fourplayer.h) */
+    if (fourplayer_skip_view()) { g_esp += 4; return; }
     if (!s_banner_watch) { sub_000D2D80(); return; }
     n0 = view_records();
     if (s_race2d == 2 && g_race2d_on) hud_call(sub_000D2D80, 0);
