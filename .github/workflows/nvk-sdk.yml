@@ -6,7 +6,9 @@
 # and uploads it as the "mesa-switch-nvk-sdk" artifact: unzip it and point
 # NVK_SDK at its portlibs/switch folder. Mesa is MIT licensed; nothing of the
 # game is in it. Then checks that the Vulkan .nro builds against it (with the
-# stubs in place of the game, as switch.yml does).
+# stubs in place of the game, as switch.yml does). On main it is also put on
+# the "nvk-sdk" release as mesa-switch-nvk-sdk.zip, the download the Windows
+# builder (OpenTrickyNX Builder.bat) fetches: artifacts need a GitHub login.
 
 name: Mesa NVK SDK
 
@@ -254,3 +256,31 @@ jobs:
         run: cmake --build port/build-switch-vk -j "$(nproc)"
       - name: The .nro is there
         run: test -s "port/build-switch-vk/SSX Tricky.nro"
+
+  publish:
+    needs: switch-vulkan
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mesa-switch-nvk-sdk
+          path: nvk-sdk
+      - name: Zip
+        run: cd nvk-sdk && zip -qr ../mesa-switch-nvk-sdk.zip portlibs
+      - name: The "nvk-sdk" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          rev="$(cat nvk-sdk/portlibs/switch/MESA_REVISION)"
+          notes="Mesa NVK for the Switch (MIT licence), for building the Vulkan renderer: unzip it and set NVK_SDK to its portlibs/switch folder. The Windows builder downloads it for you. Built from: $rev. No game code is in it."
+          if gh release view nvk-sdk >/dev/null 2>&1; then
+            gh release edit nvk-sdk --notes "$notes"
+          else
+            gh release create nvk-sdk --prerelease --target "$GITHUB_SHA" \
+              --title "Mesa NVK SDK (Vulkan driver files)" --notes "$notes"
+          fi
+          gh release upload nvk-sdk mesa-switch-nvk-sdk.zip --clobber

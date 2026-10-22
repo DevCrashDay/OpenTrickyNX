@@ -59,6 +59,8 @@ colours and more) comes along.
 - **Two renderers**: Vulkan through Mesa NVK (the one tested at 60 fps) and OpenGL through Mesa Nouveau.
 - **Two players**: a second controller is player 2.
 - **Frame counter**: an optional in-game fps display.
+- **Easy Windows builder**: `OpenTrickyNX Builder.bat` opens a window that installs the tools, builds the game from your disc
+  and copies it to your SD card ([step-by-step guide](docs/windows-guide.md)).
 - **Home-menu icon**: an optional `.nsp` forwarder, so the game starts from the home menu as a full application.
 
 ## What you need
@@ -77,7 +79,10 @@ colours and more) comes along.
 Get the source: `git clone https://github.com/DevCrashDay/OpenTrickyNX.git`, or the source `.zip` of the
 [latest release](https://github.com/DevCrashDay/OpenTrickyNX/releases).
 
-**Windows** (PowerShell, in the OpenTrickyNX folder), Vulkan renderer:
+**Windows, the easy way:** double-click **`OpenTrickyNX Builder.bat`**. A window installs the tools, builds the game from your
+disc and copies it to your SD card, with no commands to type. [docs/windows-guide.md](docs/windows-guide.md) walks through it.
+
+**Windows by hand** (PowerShell, in the OpenTrickyNX folder, with the tools from [What you need](#what-you-need)), Vulkan renderer:
 
 ```powershell
 $env:VULKAN = "1"
