@@ -59,6 +59,8 @@ colours and more) comes along.
 - **Two renderers**: Vulkan through Mesa NVK (the one tested at 60 fps) and OpenGL through Mesa Nouveau.
 - **Two players**: a second controller is player 2.
 - **Frame counter**: an optional in-game fps display.
+- **Easy Windows builder**: `OpenTrickyNX Builder.bat` opens a window that installs the tools, builds the game from your disc
+  and copies it to your SD card ([step-by-step guide](docs/windows-guide.md)).
 - **Home-menu icon**: an optional `.nsp` forwarder, so the game starts from the home menu as a full application.
 
 ## What you need
