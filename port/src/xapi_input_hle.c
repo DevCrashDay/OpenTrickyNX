@@ -43,6 +43,7 @@
 
 #include "recomp/recomp_types.h"
 #include "controls.h"
+#include "live_press.h"
 
 #ifndef XBOX_GUEST_REGS_IN_CPU /* else CPU registers: xbox_guest_regs.h */
 extern __thread uint32_t g_eax;
@@ -165,14 +166,17 @@ static const struct { const char *name; WORD bit; int analog; } names[] = {
 
 /* Live presses from the diag port (`press A 150`): the tick each button is
  * held until. Written by the diag thread, read by the game's poll. */
-static volatile DWORD g_live_until[NNAMES];
+static volatile LONG g_live_until[NNAMES];
 
 int xinput_hle_press(const char *name, int ms)
 {
     unsigned k;
     for (k = 0; k < NNAMES; k++)
         if (!_stricmp(name, names[k].name)) {
-            g_live_until[k] = GetTickCount() + (DWORD)(ms > 0 ? ms : 150);
+            DWORD until = GetTickCount() + (DWORD)(ms > 0 ? ms : 150);
+            /* Zero means inactive; reserve it even across the tick wrap. */
+            if (!until) until = 1;
+            InterlockedExchange(&g_live_until[k], (LONG)until);
             return 1;
         }
     return 0;
@@ -212,9 +216,14 @@ static void autopress_into(hle_state_t *s)
     DWORD now = GetTickCount();
     int i;
     unsigned k;
-    for (k = 0; k < NNAMES; k++)
-        if ((LONG)(g_live_until[k] - now) > 0)
+    for (k = 0; k < NNAMES; k++) {
+        DWORD until = (DWORD)InterlockedCompareExchange(&g_live_until[k], 0, 0);
+        if (live_press_pending(until, now))
             autopress_hold(s, names[k].bit, names[k].analog);
+        else if (until)
+            /* Do not erase a new press arriving while this poll expires one. */
+            InterlockedCompareExchange(&g_live_until[k], 0, (LONG)until);
+    }
     if (!parsed) {
         const char *e = getenv("XBOX_INPUT_AUTOPRESS");
         parsed = 1;
