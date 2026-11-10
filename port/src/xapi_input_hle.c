@@ -173,9 +173,7 @@ int xinput_hle_press(const char *name, int ms)
     unsigned k;
     for (k = 0; k < NNAMES; k++)
         if (!_stricmp(name, names[k].name)) {
-            DWORD until = GetTickCount() + (DWORD)(ms > 0 ? ms : 150);
-            /* Zero means inactive; reserve it even across the tick wrap. */
-            if (!until) until = 1;
+            DWORD until = live_press_deadline(GetTickCount(), (DWORD)(ms > 0 ? ms : 150));
             InterlockedExchange(&g_live_until[k], (LONG)until);
             return 1;
         }
