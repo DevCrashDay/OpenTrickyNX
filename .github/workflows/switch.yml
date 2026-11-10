@@ -25,6 +25,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake ninja-build pkg-config \
             libsdl2-dev libepoxy-dev libgl-dev python3
+      - name: Test live input deadlines
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror port/tests/live_press_test.c -o live_press_test
+          ./live_press_test
       - name: Configure
         run: cmake -S port -B port/build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DSSX_STUB_GEN=ON
       - name: Build
